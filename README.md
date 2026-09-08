@@ -73,7 +73,13 @@ Le runtime C++ est lié statiquement : aucun VC++ Redistributable n'est requis c
 
 ## Interface graphique
 
-`tuneforge-gui.exe` — fenêtre sans chrome Windows, barre latérale, télémétrie en direct.
+`tuneforge-gui.exe` **demande l'élévation dès son lancement** : chaque écriture GPU comme
+chaque réglage Windows la réclame, et relancer à mi-parcours faisait perdre l'état de la
+page en cours. La ligne de commande, elle, reste en `asInvoker` — `detect`, `list` et
+`monitor` n'ont aucune raison d'ouvrir une invite UAC. Pour compiler une interface sans
+élévation (développement uniquement) : `cmake -DTF_GUI_REQUIRE_ADMIN=OFF`.
+
+Fenêtre sans chrome Windows, barre latérale, télémétrie en direct.
 Six pages : Tableau de bord, Optimisations, Overclock GPU, Restauration, Matériel,
 Paramètres.
 
@@ -130,7 +136,7 @@ tuneforge recover                        # répare un lot interrompu
 
 ---
 
-## GPU NVIDIA (v0.3, en cours)
+## GPU NVIDIA (v0.3)
 
 ```powershell
 tuneforge gpu                    # tout ce que NVAPI expose, en lecture seule
@@ -167,6 +173,32 @@ Les écritures exigent les droits administrateur — sans quoi le pilote répond
 
 Les décalages d'horloge ajoutent un delta à la courbe tension/fréquence d'origine, ils ne
 la remplacent pas : le pilote continue de gérer les tensions correspondantes.
+
+### Courbe de ventilateur
+
+NVAPI ne sait pas confier une courbe au pilote : il n'accepte qu'un **niveau fixe**. La
+courbe est donc tenue par Tuneforge, qui relit la température et réécrit le niveau toutes
+les deux secondes — et seulement quand l'écart dépasse trois points, sinon le ventilateur
+chanterait en suivant chaque variation.
+
+Cela a une conséquence directe : **la courbe n'existe que tant que l'interface tourne.**
+Trois choses en découlent, toutes traitées :
+
+- À la fermeture, les ventilateurs sont rendus au pilote. Sans cela ils resteraient
+  bloqués au dernier niveau écrit, y compris après la fin du processus.
+- Si Tuneforge meurt sans passer par là (plantage, arrêt forcé), `tuneforge-reset.exe`
+  les rend au pilote dès son lancement, avant même de regarder s'il a des réglages
+  Windows à restaurer.
+- Une consigne refusée ne fait pas boucler : le mode courbe est abandonné et le pilote
+  reprend la main.
+
+Le plancher est à **30 %** — en dessous, la carte refuse la consigne. Le graphe dessine
+cette bande en creux plutôt que de la retirer de l'axe : une limite qu'on ne voit pas est
+une limite contre laquelle on bute.
+
+La courbe est éditée à la souris dans **Overclock GPU**, et enregistrée dans `ui.json`.
+Les points restent ordonnés en température et monotones en niveau : une courbe qui
+redescend ferait osciller le ventilateur autour du point d'inversion.
 
 ## Trois niveaux d'exposition
 

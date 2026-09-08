@@ -90,28 +90,33 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     ui::LoadFonts(dpi);
     ui::ApplyStyle(dpi);
 
-    ui::App app;
-    app.Init(&window);
-    if (auto p = page_from_args()) app.SetPage(*p);
-    if (wants_quiz()) app.StartQuiz();
+    // Portee explicite : le destructeur de App rend les ventilateurs au
+    // pilote et le journalise. Laisser l objet vivre jusqu a la fin de
+    // wWinMain le ferait travailler apres log_close().
+    {
+        ui::App app;
+        app.Init(&window);
+        if (auto p = page_from_args()) app.SetPage(*p);
+        if (wants_quiz()) app.StartQuiz();
 
-    while (window.PumpEvents()) {
-        if (window.ConsumeDpiChanged()) {
-            dpi = window.dpi_scale();
-            ui::LoadFonts(dpi);
-            ui::ApplyStyle(dpi);
-            log_debug("echelle DPI mise a jour : {:.2f}", dpi);
-        }
-        window.BeginFrame();
-        app.Frame();
-        window.EndFrame(ui::P().bg);
+        while (window.PumpEvents()) {
+            if (window.ConsumeDpiChanged()) {
+                dpi = window.dpi_scale();
+                ui::LoadFonts(dpi);
+                ui::ApplyStyle(dpi);
+                log_debug("echelle DPI mise a jour : {:.2f}", dpi);
+            }
+            window.BeginFrame();
+            app.Frame();
+            window.EndFrame(ui::P().bg);
 
-        // Le rechargement des polices doit se faire hors image : c'est pour
-        // cela que la demande est mise en attente plutot qu'appliquee au clic.
-        if (app.ConsumeStyleReload()) {
-            ui::LoadFonts(dpi);
-            ui::ApplyStyle(dpi);
-            log_debug("echelle d'interface : {:.0f} %", ui::UiScale() * 100.0f);
+            // Le rechargement des polices doit se faire hors image : c'est pour
+            // cela que la demande est mise en attente plutot qu'appliquee au clic.
+            if (app.ConsumeStyleReload()) {
+                ui::LoadFonts(dpi);
+                ui::ApplyStyle(dpi);
+                log_debug("echelle d'interface : {:.0f} %", ui::UiScale() * 100.0f);
+            }
         }
     }
 

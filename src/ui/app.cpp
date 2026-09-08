@@ -137,6 +137,23 @@ void History::push(float v) {
 }
 
 // ===========================================================================
+namespace {
+
+// Courbe par defaut : silencieuse jusqu'a 55 °C, puis montee reguliere. Le
+// premier point est a 30 % et non a zero — en manuel la carte n'accepte pas
+// moins, et pretendre le contraire sur le graphe serait mentir.
+std::vector<FanPoint> default_fan_curve() {
+    return {{40, 30}, {55, 40}, {65, 55}, {75, 75}, {85, 100}};
+}
+
+// Selecteur segmente. Trois boutons plutot qu'une liste deroulante : les trois
+// options tiennent a l'ecran, les cacher derriere un clic n'apporterait rien.
+bool ModeButton(const char* label, bool active, float w) {
+    return active ? PrimaryButton(label, ImVec2(w, 0)) : GhostButton(label, ImVec2(w, 0));
+}
+
+}  // namespace
+
 bool App::Init(Window* window) {
     window_  = window;
     engine_  = std::make_unique<Engine>();
@@ -157,6 +174,26 @@ bool App::Init(Window* window) {
             mem_target_  = g.offsets.memory_delta_khz / 1000;
         }
     }
+
+    // Courbe et mode ventilateur : ils vivent dans ui.json, a cote du theme.
+    // LoadUiPrefsStatic tourne avant l'existence de l'instance et ne peut donc
+    // pas les lire — c'est fait ici.
+    if (auto text = read_text_file(data_dir() + L"\\ui.json")) {
+        if (auto j = Json::parse(*text); j && j->is_object()) {
+            std::vector<FanPoint> pts;
+            for (const auto& it : (*j)["fan_curve"].items()) {
+                if (!it.is_object()) continue;
+                FanPoint fp;
+                fp.temp_c    = static_cast<int>(it["t"].as_int(0));
+                fp.level_pct = static_cast<int>(it["l"].as_int(0));
+                if (fp.temp_c > 0) pts.push_back(fp);
+            }
+            if (pts.size() >= 2) fan_curve_ = std::move(pts);
+            const int64_t mode = (*j)["fan_mode"].as_int(0);
+            if (mode >= 0 && mode <= 2) fan_mode_ = static_cast<FanMode>(mode);
+        }
+    }
+    if (fan_curve_.size() < 2) fan_curve_ = default_fan_curve();
 
     RefreshLog();
     return true;
@@ -239,6 +276,7 @@ void App::Notify(const std::string& text, Status s) {
 // ===========================================================================
 void App::Frame() {
     SampleTelemetry();
+    ApplyFanCurve();
 
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);
@@ -1168,6 +1206,213 @@ bool ThemedSlider(const char* id, const char* label, int* value, int vmin, int v
 
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// Ventilateurs : mode et courbe
+// ---------------------------------------------------------------------------
+void App::PageGpuFans(float width) {
+    const hw::NvGpu& g = nvapi_.gpus()[0];
+    const bool can_write = elevated_ && nvapi_.can_set_fan();
+    char buf[96];
+
+    if (!BeginCard("##gpu_fan", ImVec2(width, 0))) { EndCard(); return; }
+    const float inner = ImGui::GetContentRegionAvail().x;
+
+    CardHeader("Ventilateurs",
+               "NVAPI ne confie pas de courbe au pilote : Tuneforge la tient lui-meme.");
+
+    // --- Mode ---------------------------------------------------------------
+    const float mw = (std::min)(160.0f * M().scale, (inner - M().sp_sm * 2) / 3.0f);
+    if (ModeButton("Pilote", fan_mode_ == FanMode::Driver, mw)) {
+        fan_mode_ = FanMode::Driver;
+        ReleaseFans();
+        SaveUiPrefs();
+    }
+    ImGui::SameLine(0, M().sp_sm);
+    if (ModeButton("Niveau fixe", fan_mode_ == FanMode::Fixed, mw)) {
+        fan_mode_ = FanMode::Fixed;
+        SaveUiPrefs();
+    }
+    ImGui::SameLine(0, M().sp_sm);
+    if (ModeButton("Courbe", fan_mode_ == FanMode::Curve, mw)) {
+        fan_mode_ = FanMode::Curve;
+        fan_curve_written_ = -1;   // force une premiere ecriture
+        SaveUiPrefs();
+    }
+
+    VSpace(M().sp_md);
+
+    // --- Etat courant, sur une ligne ----------------------------------------
+    std::string state;
+    for (const auto& c : g.coolers.items) {
+        if (!state.empty()) state += "   ";
+        std::snprintf(buf, sizeof(buf), "ventilateur %u : %u %%", c.index, c.current_level);
+        state += buf;
+    }
+    if (g.coolers.tach_valid && g.coolers.tach_rpm > 0) {
+        std::snprintf(buf, sizeof(buf), "   %u tr/min", g.coolers.tach_rpm);
+        state += buf;
+    }
+    if (!state.empty()) Mono(state.c_str(), P().text_secondary);
+
+    // Le defaut d elevation est deja annonce par le bandeau en haut de page :
+    // le repeter ici ne ferait que doubler le meme message.
+    if (elevated_ && !nvapi_.can_set_fan()) {
+        VSpace(M().sp_sm);
+        Small("Ecriture des ventilateurs indisponible sur cette carte.", P().warn);
+    }
+
+    VSpace(M().sp_md);
+
+    switch (fan_mode_) {
+        case FanMode::Driver:
+            WrappedMuted("Le pilote NVIDIA gere seul la vitesse, comme sans Tuneforge. "
+                         "C'est le mode a garder si vous n'avez pas de raison precise "
+                         "d'en changer.",
+                         inner);
+            break;
+
+        case FanMode::Fixed: {
+            ThemedSlider("##fan", "Niveau", &fan_target_, 30, 100, "%d %%",
+                         (std::min)(inner, 320 * M().scale));
+            VSpace(M().sp_sm);
+            Small("Le plancher est a 30 % : en dessous, la carte refuse la consigne.",
+                  P().text_muted);
+            VSpace(M().sp_md);
+            ImGui::BeginDisabled(!can_write);
+            if (PrimaryButton("Appliquer##fan")) {
+                Result r = nvapi_.set_fan_level_pct(0, static_cast<uint32_t>(fan_target_));
+                fans_taken_ = fans_taken_ || static_cast<bool>(r);
+                Notify(r ? std::format("Ventilateurs a {} %.", fan_target_)
+                         : "Ventilateurs : " + r.message,
+                       r ? Status::Ok : Status::Danger);
+            }
+            ImGui::EndDisabled();
+            break;
+        }
+
+        case FanMode::Curve: {
+            const float side = (std::min)(240.0f * M().scale, inner * 0.34f);
+            const float cw = inner - side - M().sp_lg;
+
+            FanCurveView view;
+            view.live_temp_c = g.thermal.valid ? static_cast<float>(g.thermal.gpu_c) : -1.0f;
+            view.editable = true;
+
+            ImGui::BeginGroup();
+            if (FanCurveEditor("##fancurve", fan_curve_.data(),
+                               static_cast<int>(fan_curve_.size()),
+                               ImVec2(cw, 170 * M().scale), view)) {
+                fan_curve_written_ = -1;   // la consigne a change : reecrire
+                SaveUiPrefs();
+            }
+            VSpace(M().sp_xs);
+            Small("Temperature du GPU en abscisse, niveau en ordonnee. "
+                  "Faites glisser les points.",
+                  P().text_muted);
+            ImGui::EndGroup();
+
+            ImGui::SameLine(0, M().sp_lg);
+
+            ImGui::BeginGroup();
+            const int target = g.thermal.valid
+                                   ? FanCurveLevelAt(fan_curve_.data(),
+                                                     static_cast<int>(fan_curve_.size()),
+                                                     static_cast<float>(g.thermal.gpu_c))
+                                   : -1;
+            Small("VISE PAR LA COURBE", P().text_muted);
+            if (target >= 0) {
+                std::snprintf(buf, sizeof(buf), "%d %%", target);
+                TextAt(F().semibold, M().font_h1, P().text, buf);
+            } else {
+                TextAt(F().semibold, M().font_h1, P().text_disabled, "--");
+            }
+
+            VSpace(M().sp_sm);
+            Small("DERNIER NIVEAU ECRIT", P().text_muted);
+            if (fan_curve_written_ >= 0) {
+                std::snprintf(buf, sizeof(buf), "%d %%", fan_curve_written_);
+                Mono(buf, P().text_secondary);
+            } else {
+                Mono("aucun", P().text_disabled);
+            }
+
+            VSpace(M().sp_md);
+            if (GhostButton("Courbe par defaut", ImVec2(side, 0))) {
+                fan_curve_ = default_fan_curve();
+                fan_curve_written_ = -1;
+                SaveUiPrefs();
+                Notify("Courbe remise a sa forme d'origine.", Status::Ok);
+            }
+            ImGui::EndGroup();
+            break;
+        }
+    }
+
+    EndCard();
+}
+
+// ---------------------------------------------------------------------------
+// Application de la courbe
+//
+// Le pilote ne connait que des niveaux fixes : la courbe n'existe que tant que
+// Tuneforge tourne. On relit donc la temperature et on reecrit le niveau — mais
+// seulement quand l'ecart le justifie, sinon chaque image traverserait le
+// pilote pour rien.
+// ---------------------------------------------------------------------------
+void App::ApplyFanCurve() {
+    if (fan_mode_ != FanMode::Curve) return;
+    if (!has_nvapi_ || nvapi_.gpus().empty()) return;
+    if (!elevated_ || !nvapi_.can_set_fan()) return;
+    if (fan_curve_.size() < 2) return;
+
+    const hw::NvGpu& g = nvapi_.gpus()[0];
+    if (!g.thermal.valid) return;
+
+    const double now = ImGui::GetTime();
+    if (now - last_curve_ < 2.0) return;   // deux secondes suffisent a suivre
+    last_curve_ = now;
+
+    const int target = FanCurveLevelAt(fan_curve_.data(), static_cast<int>(fan_curve_.size()),
+                                       static_cast<float>(g.thermal.gpu_c));
+
+    // Hysteresis : sous trois points d'ecart, on laisse le ventilateur
+    // tranquille. Suivre la courbe au point pres le ferait chanter.
+    if (fan_curve_written_ >= 0 && std::abs(target - fan_curve_written_) < 3) return;
+
+    Result r = nvapi_.set_fan_level_pct(0, static_cast<uint32_t>(target));
+    if (r) {
+        fan_curve_written_ = target;
+        fans_taken_ = true;
+    } else {
+        // Une consigne refusee ne doit pas etre retentee toutes les deux
+        // secondes en silence : on sort du mode courbe et on le dit.
+        log_warn("courbe ventilateur abandonnee : {}", r.message);
+        fan_mode_ = FanMode::Driver;
+        Notify("Courbe abandonnee : " + r.message, Status::Danger);
+        ReleaseFans();
+    }
+}
+
+void App::ReleaseFans() {
+    if (!fans_taken_) return;
+    if (!has_nvapi_ || nvapi_.gpus().empty()) return;
+    Result r = nvapi_.set_fan_auto(0);
+    if (r) {
+        log_info("ventilateurs rendus au pilote");
+        fans_taken_ = false;
+        fan_curve_written_ = -1;
+    } else {
+        log_error("ventilateurs non rendus au pilote : {}", r.message);
+    }
+}
+
+App::~App() {
+    // Sans cela, fermer la fenetre laisserait les ventilateurs bloques au
+    // dernier niveau ecrit — y compris apres la fin du processus.
+    ReleaseFans();
+}
+
+// ---------------------------------------------------------------------------
 void App::PageGpu() {
     const float total = ImGui::GetContentRegionAvail().x;
 
@@ -1195,13 +1440,21 @@ void App::PageGpu() {
     char buf[96];
 
     // --- Elevation ----------------------------------------------------------
-    // Une ligne, pas une carte : l'information tient en huit mots.
+    // Avec le manifeste « requireAdministrator », ce bandeau ne devrait jamais
+    // apparaitre. Il reste la pour la seule configuration ou l'app peut
+    // demarrer sans droits : un binaire dont le manifeste a ete retire.
     if (!elevated_) {
+        static const char* kRelaunch = "Relancer en administrateur";
         ImGui::BeginGroup();
         StatusPill("Lecture seule — elevation requise pour ecrire", Status::Warn);
         ImGui::SameLine(0, M().sp_md);
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() - M().sp_xs);
-        if (GhostButton("Relancer en administrateur")) {
+        // Largeur explicite : laissee au calcul automatique, l'etiquette
+        // debordait de son cadre a certaines echelles.
+        ImGui::PushFont(F().semibold, M().font_body);
+        const float bw = ImGui::CalcTextSize(kRelaunch).x + M().sp_lg * 2 + M().sp_sm;
+        ImGui::PopFont();
+        if (GhostButton(kRelaunch, ImVec2(bw, 0))) {
             if (relaunch_elevated({"--page", "gpu"}, false)) window_->Close();
         }
         ImGui::EndGroup();
@@ -1250,20 +1503,19 @@ void App::PageGpu() {
         MetricTile("FREQUENCE GPU", "--", "", -1.0f, Status::Neutral, ImVec2(tile_w, tile_h));
     }
 
+    VSpace(M().sp_sm);
+
+    // Une ligne de texte discrete plutot que trois pastilles : ces trois faits
+    // sont du contexte permanent, ils n'ont pas a peser autant qu'un etat.
+    std::snprintf(buf, sizeof(buf), "Volatile, perdu au redemarrage   ·   Sans driver noyau"
+                                    "   ·   Pilote %s",
+                  nvapi_.driver_version().empty() ? "inconnu" : nvapi_.driver_version().c_str());
+    Small(buf, P().text_muted);
+
     VSpace(gap);
 
-    // Une seule ligne de pastilles, sans carte autour : l'information est
-    // contextuelle, elle n'a pas besoin d'un bloc a elle.
-    ImGui::BeginGroup();
-    StatusPill("Volatile : perdu au redemarrage", Status::Accent);
-    ImGui::SameLine(0, M().sp_xs);
-    StatusPill("Sans driver noyau", Status::Ok);
-    ImGui::SameLine(0, M().sp_xs);
-    StatusPill(std::format("Pilote {}", nvapi_.driver_version().empty()
-                                            ? "inconnu"
-                                            : nvapi_.driver_version()).c_str(),
-               Status::Neutral);
-    ImGui::EndGroup();
+    // --- Ventilateurs --------------------------------------------------------
+    PageGpuFans(total);
 
     VSpace(gap);
     const float col_w = (total - gap) / 2.0f;
@@ -1309,61 +1561,20 @@ void App::PageGpu() {
     EndCard();
     ImGui::SameLine(0, gap);
 
-    // --- Ventilateurs ---------------------------------------------------------
-    if (BeginCard("##gpu_fan", ImVec2(col_w, 0))) {
-        const float inner = ImGui::GetContentRegionAvail().x;
-        CardHeader("Ventilateurs", "Plancher a 30 % en manuel.");
-        (void)inner;
-
-        for (const auto& c : g.coolers.items) {
-            std::snprintf(buf, sizeof(buf), "Ventilateur %u : %u %%%s", c.index,
-                          c.current_level, c.active ? "" : " (arrete)");
-            StatusPill(buf, c.active ? Status::Ok : Status::Neutral);
-            VSpace(M().sp_xs);
-        }
-        if (g.coolers.tach_valid && g.coolers.tach_rpm > 0) {
-            std::snprintf(buf, sizeof(buf), "%u tr/min", g.coolers.tach_rpm);
-            Mono(buf, P().text_secondary);
-        }
-
-        VSpace(M().sp_sm);
-        ThemedSlider("##fan", "Niveau manuel", &fan_target_, 30, 100, "%d %%", inner);
-
-        VSpace(M().sp_md);
-        ImGui::BeginDisabled(!can_write || !nvapi_.can_set_fan());
-        if (PrimaryButton("Appliquer##fan")) {
-            Result r = nvapi_.set_fan_level_pct(0, static_cast<uint32_t>(fan_target_));
-            Notify(r ? std::format("Ventilateurs a {} %.", fan_target_)
-                     : "Ventilateurs : " + r.message,
-                   r ? Status::Ok : Status::Danger);
-        }
-        ImGui::SameLine(0, M().sp_sm);
-        if (GhostButton("Automatique##fan")) {
-            Result r = nvapi_.set_fan_auto(0);
-            Notify(r ? "Ventilateurs rendus au pilote." : "Ventilateurs : " + r.message,
-                   r ? Status::Ok : Status::Danger);
-        }
-        ImGui::EndDisabled();
-    }
-    EndCard();
-
-    VSpace(gap);
-
     // --- Decalages d'horloge --------------------------------------------------
-    if (BeginCard("##gpu_clocks", ImVec2(total, 0))) {
+    if (BeginCard("##gpu_clocks", ImVec2(col_w, 0))) {
         const float inner = ImGui::GetContentRegionAvail().x;
         CardHeader("Decalages d'horloge", "Un delta ajoute a la courbe d'origine.");
 
         if (!g.offsets.valid) {
             WrappedMuted("Non lisibles sur cette carte.", inner);
         } else {
-            const float half = (inner - gap) / 2.0f;
             ThemedSlider("##core", "Coeur graphique", &core_target_,
                          g.offsets.graphics_min_khz / 1000, g.offsets.graphics_max_khz / 1000,
-                         "%+d MHz", half);
-            ImGui::SameLine(0, gap);
+                         "%+d MHz", inner);
+            VSpace(M().sp_sm);
             ThemedSlider("##mem", "Memoire", &mem_target_, g.offsets.memory_min_khz / 1000,
-                         g.offsets.memory_max_khz / 1000, "%+d MHz", half);
+                         g.offsets.memory_max_khz / 1000, "%+d MHz", inner);
 
             VSpace(M().sp_sm);
             std::snprintf(buf, sizeof(buf), "appliques : coeur %+d MHz  ·  memoire %+d MHz",
@@ -1802,6 +2013,15 @@ void App::SaveUiPrefs() {
     Json j = Json::object();
     j.set("theme", static_cast<int64_t>(CurrentTheme()));
     j.set("ui_scale", UiScale());
+    j.set("fan_mode", static_cast<int64_t>(fan_mode_));
+    Json curve = Json::array();
+    for (const auto& fp : fan_curve_) {
+        Json pt = Json::object();
+        pt.set("t", static_cast<int64_t>(fp.temp_c));
+        pt.set("l", static_cast<int64_t>(fp.level_pct));
+        curve.push(std::move(pt));
+    }
+    j.set("fan_curve", std::move(curve));
     write_text_file(data_dir() + L"\\ui.json", j.dump(2));
 }
 

@@ -80,6 +80,34 @@ void Chart(const char* id, const float* values, int count, int offset, const ImV
 
 void ProgressBar(float fraction, const ImVec2& size, Status s);
 
+// --- Courbe de ventilateur --------------------------------------------------
+// Temperature en abscisse, niveau en ordonnee. NVAPI ne sait pas confier une
+// courbe au pilote : elle est donc appliquee par l app, qui relit la
+// temperature et reecrit le niveau. Le widget ne fait que l editer.
+struct FanPoint {
+    int temp_c = 0;
+    int level_pct = 0;
+};
+
+struct FanCurveView {
+    int   temp_min = 20, temp_max = 95;
+    // L ordonnee va toujours de 0 a 100 %, mais la carte refuse les consignes
+    // sous le plancher : la bande correspondante est dessinee en creux plutot
+    // que retiree de l axe, sinon l utilisateur bute sur une limite invisible.
+    int   level_floor = 30;
+    float live_temp_c = -1.0f;               // < 0 : pas de repere de mesure
+    bool  editable = true;
+};
+
+// Niveau interpole a une temperature donnee. Plat avant le premier point et
+// apres le dernier.
+int FanCurveLevelAt(const FanPoint* pts, int count, float temp_c);
+
+// Renvoie true quand un point vient d etre deplace. Les points restent
+// ordonnes en temperature et monotones en niveau.
+bool FanCurveEditor(const char* id, FanPoint* pts, int count, const ImVec2& size,
+                    const FanCurveView& v);
+
 // --- Divers ----------------------------------------------------------------
 void HelpMarker(const char* text);
 // Interpolation exponentielle stable quel que soit le pas de temps.

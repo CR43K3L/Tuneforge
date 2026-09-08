@@ -13,6 +13,7 @@
 #include <string>
 
 #include "core/engine.hpp"
+#include "hw/nvapi.hpp"
 #include "platform/elevation.hpp"
 
 using namespace tf;
@@ -52,6 +53,20 @@ int main(int argc, char** argv) {
         std::string dummy;
         std::getline(std::cin, dummy);
         return 3;
+    }
+
+    // Les ventilateurs d abord, avant meme de regarder l etat : la courbe de
+    // Tuneforge n existe que tant que l interface tourne, et un arret brutal
+    // les laisse bloques au dernier niveau ecrit. C est exactement le genre de
+    // situation pour laquelle cet outil existe.
+    {
+        hw::Nvapi nv;
+        if (nv.init() && nv.refresh() && !nv.gpus().empty() && nv.can_set_fan()) {
+            if (nv.set_fan_auto(0)) {
+                line("  Ventilateurs du GPU rendus au pilote.");
+                line();
+            }
+        }
     }
 
     Engine engine;

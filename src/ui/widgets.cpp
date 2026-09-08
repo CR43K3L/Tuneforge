@@ -570,4 +570,218 @@ float Animate(ImGuiID id, float target, float speed) {
     return *v;
 }
 
+// ===========================================================================
+// Courbe de ventilateur
+// ===========================================================================
+int FanCurveLevelAt(const FanPoint* pts, int count, float temp_c) {
+    if (count <= 0) return 0;
+    if (temp_c <= static_cast<float>(pts[0].temp_c)) return pts[0].level_pct;
+    if (temp_c >= static_cast<float>(pts[count - 1].temp_c)) return pts[count - 1].level_pct;
+    for (int i = 0; i < count - 1; ++i) {
+        const float a = static_cast<float>(pts[i].temp_c);
+        const float b = static_cast<float>(pts[i + 1].temp_c);
+        if (temp_c < a || temp_c > b) continue;
+        const float span = b - a;
+        if (span <= 0.0f) return pts[i + 1].level_pct;
+        const float t = (temp_c - a) / span;
+        const float l = pts[i].level_pct + (pts[i + 1].level_pct - pts[i].level_pct) * t;
+        return static_cast<int>(std::lround(l));
+    }
+    return pts[count - 1].level_pct;
+}
+
+bool FanCurveEditor(const char* id, FanPoint* pts, int count, const ImVec2& size,
+                    const FanCurveView& v) {
+    ImGuiWindow*  win = ImGui::GetCurrentWindow();
+    const ImGuiID gid = win->GetID(id);
+    const ImVec2  p = ImGui::GetCursorScreenPos();
+
+    // Gouttiere de gauche et bandeau du bas, dimensionnes sur les etiquettes.
+    ImGui::PushFont(F().mono, M().font_micro);
+    const float gutter = ImGui::CalcTextSize("100").x + M().sp_sm;
+    const float axis_h = ImGui::GetFontSize() + M().sp_xs;
+    ImGui::PopFont();
+
+    const ImVec2 plot(p.x + gutter, p.y);
+    const ImVec2 psize(size.x - gutter, size.y - axis_h);
+
+    ImGui::ItemSize(size);
+    if (!ImGui::ItemAdd(ImRect(p, p + size), gid)) return false;
+    if (count < 2 || psize.x <= 1.0f || psize.y <= 1.0f) return false;
+
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    const ImVec4 col = P().accent;
+    const float  t_span = static_cast<float>(v.temp_max - v.temp_min);
+    const float  l_span = 100.0f;
+
+    auto xof = [&](float t) {
+        return plot.x + psize.x * (t - static_cast<float>(v.temp_min)) / t_span;
+    };
+    auto yof = [&](float l) { return plot.y + psize.y * (1.0f - l / l_span); };
+
+    dl->AddRectFilled(plot, plot + psize, U32(P().sunken), M().r_md);
+
+    // --- Plancher d ecriture -------------------------------------------------
+    const float floor_y = yof(static_cast<float>(v.level_floor));
+    dl->AddRectFilled(ImVec2(plot.x, floor_y), ImVec2(plot.x + psize.x, plot.y + psize.y),
+                      U32(WithAlpha(P().border_subtle, 0.45f)), M().r_md,
+                      ImDrawFlags_RoundCornersBottom);
+    {
+        char fl[32];
+        std::snprintf(fl, sizeof(fl), "plancher %d %%", v.level_floor);
+        ImGui::PushFont(F().regular, M().font_micro);
+        dl->AddText(ImVec2(plot.x + M().sp_sm, floor_y + M().sp_xs * 0.5f),
+                    U32(P().text_disabled), fl);
+        ImGui::PopFont();
+    }
+
+    // --- Grille -------------------------------------------------------------
+    ImGui::PushFont(F().mono, M().font_micro);
+    for (int lv = 0; lv <= 100; lv += 25) {
+        const float y = yof(static_cast<float>(lv));
+        if (lv > 0 && lv < 100) {
+            dl->AddLine(ImVec2(plot.x, y), ImVec2(plot.x + psize.x, y),
+                        U32(WithAlpha(P().border_subtle, 0.55f)), M().border);
+        }
+        char lbl[8];
+        std::snprintf(lbl, sizeof(lbl), "%d", lv);
+        const ImVec2 ts = ImGui::CalcTextSize(lbl);
+        dl->AddText(ImVec2(plot.x - M().sp_sm - ts.x,
+                           std::clamp(y - ts.y * 0.5f, plot.y, plot.y + psize.y - ts.y)),
+                    U32(P().text_disabled), lbl);
+    }
+    for (int tc = v.temp_min; tc <= v.temp_max; tc += 15) {
+        const float x = xof(static_cast<float>(tc));
+        if (tc > v.temp_min) {
+            dl->AddLine(ImVec2(x, plot.y), ImVec2(x, plot.y + psize.y),
+                        U32(WithAlpha(P().border_subtle, 0.40f)), M().border);
+        }
+        char lbl[8];
+        std::snprintf(lbl, sizeof(lbl), "%d", tc);
+        const ImVec2 ts = ImGui::CalcTextSize(lbl);
+        dl->AddText(ImVec2(std::clamp(x - ts.x * 0.5f, plot.x, plot.x + psize.x - ts.x),
+                           plot.y + psize.y + M().sp_xs),
+                    U32(P().text_disabled), lbl);
+    }
+    ImGui::PopFont();
+
+    // --- Deplacement d'un point ---------------------------------------------
+    // L'index en cours de glissement vit dans le stockage d'ImGui plutot que
+    // dans une variable statique : deux courbes a l'ecran ne se marcheraient
+    // pas dessus. -1 = repos, -2 = clic dans le vide (aucune prise).
+    bool changed = false;
+    ImGuiStorage* st = ImGui::GetStateStorage();
+    const ImGuiID drag_key = ImHashStr("##fandrag", 0, gid);
+    int           drag = st->GetInt(drag_key, -1);
+
+    if (v.editable) {
+        bool hovered = false, held = false;
+        ImGui::ButtonBehavior(ImRect(plot, plot + psize), gid, &hovered, &held);
+        const ImVec2 m = ImGui::GetIO().MousePos;
+
+        if (held && drag == -1) {
+            float best = 20.0f * M().scale;
+            int   pick = -1;
+            for (int i = 0; i < count; ++i) {
+                const ImVec2 h(xof(static_cast<float>(pts[i].temp_c)),
+                               yof(static_cast<float>(pts[i].level_pct)));
+                const float  d = std::sqrt(ImLengthSqr(m - h));
+                if (d < best) { best = d; pick = i; }
+            }
+            drag = (pick >= 0) ? pick : -2;
+            st->SetInt(drag_key, drag);
+        } else if (!held && drag != -1) {
+            drag = -1;
+            st->SetInt(drag_key, -1);
+        }
+
+        if (drag >= 0 && drag < count) {
+            int nt = static_cast<int>(std::lround(
+                static_cast<float>(v.temp_min) + (m.x - plot.x) / psize.x * t_span));
+            int nl = static_cast<int>(
+                std::lround((1.0f - (m.y - plot.y) / psize.y) * l_span));
+
+            nt = std::clamp(nt, v.temp_min, v.temp_max);
+            nl = std::clamp(nl, v.level_floor, 100);
+            // Deux points ne doivent jamais se superposer : passe le meme
+            // abscisse, l'un des deux devient impossible a rattraper.
+            if (drag > 0)         nt = (std::max)(nt, pts[drag - 1].temp_c + 2);
+            if (drag < count - 1) nt = (std::min)(nt, pts[drag + 1].temp_c - 2);
+            // Monotonie : une courbe qui redescend ferait osciller le
+            // ventilateur autour du point d'inversion.
+            if (drag > 0)         nl = (std::max)(nl, pts[drag - 1].level_pct);
+            if (drag < count - 1) nl = (std::min)(nl, pts[drag + 1].level_pct);
+
+            if (nt != pts[drag].temp_c || nl != pts[drag].level_pct) {
+                pts[drag].temp_c = nt;
+                pts[drag].level_pct = nl;
+                changed = true;
+            }
+        }
+    }
+
+    // --- Courbe --------------------------------------------------------------
+    // La courbe est plate avant le premier point et apres le dernier : c'est
+    // exactement ce que fait l'evaluation, autant le montrer.
+    ImVector<ImVec2> line;
+    line.reserve(count + 2);
+    line.push_back(ImVec2(plot.x, yof(static_cast<float>(pts[0].level_pct))));
+    for (int i = 0; i < count; ++i) {
+        line.push_back(ImVec2(xof(static_cast<float>(pts[i].temp_c)),
+                              yof(static_cast<float>(pts[i].level_pct))));
+    }
+    line.push_back(ImVec2(plot.x + psize.x,
+                          yof(static_cast<float>(pts[count - 1].level_pct))));
+
+    for (int i = 0; i < line.Size - 1; ++i) {
+        dl->AddQuadFilled(line[i], line[i + 1],
+                          ImVec2(line[i + 1].x, plot.y + psize.y),
+                          ImVec2(line[i].x, plot.y + psize.y),
+                          U32(WithAlpha(col, v.editable ? 0.16f : 0.07f)));
+    }
+    dl->AddPolyline(line.Data, line.Size, U32(v.editable ? col : WithAlpha(col, 0.45f)), 0,
+                    2.0f * M().scale);
+
+    // --- Repere de mesure -----------------------------------------------------
+    if (v.live_temp_c >= 0.0f) {
+        const float lx = std::clamp(xof(v.live_temp_c), plot.x, plot.x + psize.x);
+        for (float y = plot.y; y < plot.y + psize.y; y += 6.0f * M().scale) {
+            dl->AddLine(ImVec2(lx, y), ImVec2(lx, y + 3.0f * M().scale),
+                        U32(WithAlpha(P().text_muted, 0.55f)), M().border);
+        }
+        const int   lvl = FanCurveLevelAt(pts, count, v.live_temp_c);
+        const ImVec2 dot(lx, yof(static_cast<float>(lvl)));
+        dl->AddCircleFilled(dot, 4.5f * M().scale, U32(P().bg), 16);
+        dl->AddCircleFilled(dot, 3.0f * M().scale, U32(P().warn), 16);
+
+        char lbl[48];
+        std::snprintf(lbl, sizeof(lbl), "%.0f \xc2\xb0""C  \xe2\x86\x92  %d %%", v.live_temp_c, lvl);
+        ImGui::PushFont(F().semibold, M().font_micro);
+        const ImVec2 ts = ImGui::CalcTextSize(lbl);
+        const ImVec2 bp(std::clamp(dot.x + M().sp_sm, plot.x,
+                                   plot.x + psize.x - ts.x - M().sp_sm * 2),
+                        plot.y + M().sp_sm);
+        dl->AddRectFilled(bp, ImVec2(bp.x + ts.x + M().sp_sm, bp.y + ts.y + M().sp_xs),
+                          U32(WithAlpha(P().warn, 0.16f)), M().r_sm);
+        dl->AddText(ImVec2(bp.x + M().sp_sm * 0.5f, bp.y + M().sp_xs * 0.5f), U32(P().warn), lbl);
+        ImGui::PopFont();
+    }
+
+    // --- Poignees -------------------------------------------------------------
+    if (v.editable) {
+        const ImVec2 m = ImGui::GetIO().MousePos;
+        for (int i = 0; i < count; ++i) {
+            const ImVec2 h(xof(static_cast<float>(pts[i].temp_c)),
+                           yof(static_cast<float>(pts[i].level_pct)));
+            const bool  on = (drag == i) ||
+                             (drag == -1 && std::sqrt(ImLengthSqr(m - h)) < 20.0f * M().scale);
+            const float r = (on ? 6.5f : 5.0f) * M().scale;
+            dl->AddCircleFilled(h, r + 1.5f * M().scale, U32(P().sunken), 20);
+            dl->AddCircleFilled(h, r, U32(on ? P().accent_hover : col), 20);
+        }
+    }
+
+    return changed;
+}
+
 } // namespace tf::ui

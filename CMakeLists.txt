@@ -106,6 +106,20 @@ if(EXISTS ${IMGUI_DIR}/imgui.cpp)
         src/ui/window.cpp
     )
     target_link_libraries(tuneforge-gui PRIVATE tfcore imgui)
+
+    # L interface demande l elevation des son lancement. Elle ne sert a rien
+    # sans : chaque ecriture GPU comme chaque reglage Windows la reclame, et
+    # relancer a mi-parcours faisait perdre l etat de la page en cours.
+    # La ligne de commande, elle, garde asInvoker : « detect », « list » et
+    # « monitor » n ont aucune raison d ouvrir une invite UAC.
+    # -DTF_GUI_REQUIRE_ADMIN=OFF produit un binaire sans elevation. Reserve au
+    # developpement : il permet de verifier le rendu sans declencher une invite
+    # UAC a chaque lancement. Ce n est pas la configuration livree.
+    option(TF_GUI_REQUIRE_ADMIN "L interface exige l elevation des son lancement" ON)
+    if(MSVC AND TF_GUI_REQUIRE_ADMIN)
+        set_target_properties(tuneforge-gui PROPERTIES
+            LINK_FLAGS "/MANIFESTUAC:\"level='requireAdministrator' uiAccess='false'\"")
+    endif()
 else()
     message(WARNING
         "Dear ImGui absent de third_party/imgui — l'interface graphique ne sera pas compilee.\n"

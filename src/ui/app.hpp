@@ -13,6 +13,7 @@
 #include "hw/nvapi.hpp"
 #include "hw/sensors.hpp"
 #include "ui/theme.hpp"
+#include "ui/widgets.hpp"
 #include "ui/window.hpp"
 
 namespace tf::ui {
@@ -43,8 +44,18 @@ enum class Answer { None, Yes, No };
 // lesquels l'utilisateur sera consulte.
 enum class OptLevel { Basic, Expert };
 
+// Pilotage des ventilateurs. NVAPI n expose qu un niveau fixe : la courbe est
+// donc tenue par l app, qui relit la temperature et reecrit le niveau. Si l app
+// se ferme, le pilote doit reprendre la main — sinon les ventilateurs restent
+// bloques au dernier niveau ecrit, meme apres la fermeture.
+enum class FanMode { Driver, Fixed, Curve };
+
 class App {
 public:
+    // Le destructeur rend les ventilateurs au pilote : sans cela, fermer
+    // l app les laisserait bloques au dernier niveau ecrit.
+    ~App();
+
     bool Init(Window* window);
     void Frame();
 
@@ -71,12 +82,19 @@ private:
     void PageTweaksRecap();   // recapitulatif avant application
     void PageTweaksDone();    // compte rendu apres application
     void PageGpu();           // reglages GPU volatiles (v0.3)
+    void PageGpuFans(float width);   // carte ventilateurs : mode et courbe
     void PageRestore();       // tout ce que Tuneforge peut annuler
     void BuildQuiz(OptLevel level);
     void PageHardware();
     void PageSettings();      // theme, echelle, journal
     void DrawJournal();       // rendu du journal, affiche dans les parametres
     void SaveUiPrefs();
+
+    // Applique la courbe si elle est active : lit la temperature, calcule le
+    // niveau, et n ecrit que si l ecart justifie de traverser le pilote.
+    void ApplyFanCurve();
+    // Rend la main au pilote. Appelee a la fermeture, quoi qu il arrive.
+    void ReleaseFans();
 
 public:
     // Appelee avant la creation du style : le theme et l'echelle doivent etre
@@ -114,6 +132,14 @@ private:
     int                core_target_ = 0;
     int                mem_target_ = 0;
     int                fan_target_ = 50;
+
+    // Ventilateurs : mode courant, courbe, et derniere valeur reellement
+    // ecrite (pour ne pas reecrire le meme niveau a chaque image).
+    FanMode                 fan_mode_ = FanMode::Driver;
+    std::vector<FanPoint>   fan_curve_;
+    int                     fan_curve_written_ = -1;
+    double                  last_curve_ = 0.0;
+    bool                    fans_taken_ = false;   // l app tient les ventilateurs
 
     hw::SystemSnapshot snapshot_{};
     hw::GpuTelemetry   gpu_{};
