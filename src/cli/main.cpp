@@ -99,14 +99,12 @@ void print_help() {
     outln(std::string(C_BOLD) + "LECTURE (aucune elevation requise)" + C_RESET);
     outln("  detect              Materiel, systeme, securite et capacites detectees");
     outln("  list [--all]        Catalogue des reglages et leur etat actuel");
-    outln("  profiles            Profils disponibles");
     outln("  status              Ce que Tuneforge a modifie sur cette machine");
     outln("  monitor             Telemetrie temps reel (Ctrl+C pour quitter)");
     outln("  report [fichier]    Rapport de diagnostic JSON, anonyme");
     outln("  gpu                 Ce que NVAPI expose sur la carte NVIDIA (lecture seule)");
     outln();
     outln(std::string(C_BOLD) + "MODIFICATION (elevation requise)" + C_RESET);
-    outln("  apply <profil>      Applique un profil");
     outln("  apply <id> [id...]  Applique des reglages precis");
     outln("  revert <id> [id...] Restaure les reglages indiques");
     outln("  revert --all        Restaure tout ce que Tuneforge a modifie");
@@ -126,8 +124,10 @@ void print_help() {
     outln("      --no-elevate    N'essaie pas de relancer en administrateur");
     outln();
     outln(std::string(C_DIM) +
-          "Tuneforge ne touche a aucune tension ni frequence materielle. "
-          "Aucun driver noyau n'est installe." + C_RESET);
+          "Tuneforge ne touche ni a la tension ni a la frequence du processeur, et "
+          "n'installe aucun driver noyau.\n"
+          "Les reglages GPU (puissance, horloges, ventilateurs) sont bornes par le "
+          "pilote et perdus au redemarrage." + C_RESET);
     outln();
 }
 
@@ -201,34 +201,11 @@ int cmd_list(Engine& e, const Args& a) {
     return 0;
 }
 
-int cmd_profiles(Engine& e) {
-    outln();
-    outln(std::string(C_BOLD) + "PROFILS" + C_RESET);
-    if (e.profiles().empty()) {
-        outln();
-        outln(std::string(C_YELLOW) +
-              "  Aucun profil trouve. Verifiez le dossier profiles/ a cote du binaire." + C_RESET);
-        outln();
-        return 1;
-    }
-    for (const auto& p : e.profiles()) {
-        outln();
-        outln(std::format("  {}{}{} — {}", C_BOLD, p.name, C_RESET, p.title));
-        outln(std::format("    {}", p.description));
-        outln(std::format("    {}{} reglages{}", C_DIM, p.tweaks.size(), C_RESET));
-    }
-    outln();
-    return 0;
-}
-
 int cmd_status(Engine& e) {
     outln();
     outln(std::string(C_BOLD) + "ETAT" + C_RESET);
     outln();
     outln(std::format("  Fichier d'etat   {}", narrow(e.state().path())));
-    outln(std::format("  Profil actif     {}", e.state().active_profile().empty()
-                                                   ? "(aucun)"
-                                                   : e.state().active_profile()));
     outln(std::format("  Elevation        {}", is_elevated() ? "administrateur" : "utilisateur"));
 
     if (DirtyFlag::exists()) {
@@ -288,22 +265,12 @@ void print_outcome(const Engine::Outcome& o, bool dry_run, bool reverting = fals
 }
 
 int cmd_apply(Engine& e, const Args& a) {
-    std::vector<std::string> ids;
-    std::string profile_name;
-
     if (a.positional.empty()) {
-        outln(std::string(C_RED) + "  Precisez un profil ou des identifiants de reglage." + C_RESET);
-        outln("  tuneforge profiles   pour la liste des profils");
+        outln(std::string(C_RED) + "  Precisez un ou plusieurs identifiants de reglage." + C_RESET);
+        outln("  tuneforge list   pour le catalogue complet");
         return 2;
     }
-    if (const TuneProfile* p = e.find_profile(a.positional.front())) {
-        profile_name = p->name;
-        ids = p->tweaks;
-        outln();
-        outln(std::format("  Profil {}{}{} — {}", C_BOLD, p->title, C_RESET, p->description));
-    } else {
-        ids = a.positional;
-    }
+    const std::vector<std::string> ids = a.positional;
 
     Engine::Options opt;
     opt.dry_run        = a.dry_run;
@@ -314,11 +281,6 @@ int cmd_apply(Engine& e, const Args& a) {
     print_outcome(outcome, a.dry_run);
 
     if (a.dry_run || !outcome.any_change()) return outcome.failed.empty() ? 0 : 1;
-
-    if (!profile_name.empty()) {
-        e.state().set_active_profile(profile_name);
-        e.state().save();
-    }
 
     // Chien de garde : sans confirmation, on annule tout seul.
     if (a.watchdog > 0 && !a.yes) {
@@ -999,6 +961,24 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // Une commande mal formee doit echouer AVANT l'elevation : sinon
+    // l'utilisateur valide une invite UAC pour se voir repondre qu'il a oublie
+    // un argument.
+    if ((a.command == "apply" || a.command == "revert") && a.positional.empty() &&
+        !a.all) {
+        outln();
+        outln(std::string(C_RED) + "  Precisez un ou plusieurs identifiants de reglage." +
+              C_RESET);
+        if (a.command == "apply") {
+            outln("  tuneforge list           pour le catalogue complet");
+        } else {
+            outln("  tuneforge status         pour ce qui est restaurable");
+            outln("  tuneforge revert --all   pour tout restaurer");
+        }
+        outln();
+        return 2;
+    }
+
     // Les commandes qui ecrivent ont besoin de l'elevation. On relance plutot
     // que d'echouer a mi-parcours sur un ERROR_ACCESS_DENIED.
     if (command_writes(a.command) && !is_elevated() && !a.no_elevate) {
@@ -1037,7 +1017,6 @@ int main(int argc, char** argv) {
     try {
         if      (a.command == "detect")   rc = cmd_detect(engine);
         else if (a.command == "list")     rc = cmd_list(engine, a);
-        else if (a.command == "profiles") rc = cmd_profiles(engine);
         else if (a.command == "status")   rc = cmd_status(engine);
         else if (a.command == "apply")    rc = cmd_apply(engine, a);
         else if (a.command == "revert")   rc = cmd_revert(engine, a);

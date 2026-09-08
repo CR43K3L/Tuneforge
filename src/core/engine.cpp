@@ -44,19 +44,6 @@ bool StateStore::load() {
     }
     root_ = std::move(*parsed);
     if (!root_.has("snapshots")) root_.set("snapshots", Json::object());
-    active_profile_ = root_["active_profile"].as_string();
-
-    // Invariant : sans le moindre instantane, aucun profil ne peut etre actif.
-    // Une version anterieure enregistrait le profil meme quand l'application
-    // avait ete refusee faute d'elevation ; on repare l'etat plutot que de
-    // continuer a afficher une information fausse.
-    if (!active_profile_.empty() && root_["snapshots"].size() == 0) {
-        log_warn("profil « {} » declare actif sans aucun instantane : etat corrige",
-                 active_profile_);
-        active_profile_.clear();
-        root_.set("active_profile", "");
-        save();  // on corrige le fichier, pas seulement la copie en memoire
-    }
     return true;
 }
 
@@ -64,7 +51,6 @@ bool StateStore::save() const {
     Json out = root_;
     out.set("version", kStateVersion);
     out.set("updated", timestamp_iso());
-    out.set("active_profile", active_profile_);
     if (!write_text_file(state_path(), out.dump(2))) {
         log_error("ecriture de l'etat impossible : {}", narrow(state_path()));
         return false;
@@ -175,7 +161,6 @@ Watchdog::~Watchdog() {
 Engine::Engine() {
     tweaks_ = build_all_tweaks();
     state_.load();
-    load_profiles();
 }
 
 const hw::Profile& Engine::hardware() const { return hw::detect(); }
@@ -192,64 +177,6 @@ const ITweak* Engine::find(std::string_view id) const {
         if (t->meta().id == id) return t.get();
     }
     return nullptr;
-}
-
-const TuneProfile* Engine::find_profile(std::string_view name) const {
-    for (const auto& p : profiles_) {
-        if (iequals(p.name, name)) return &p;
-    }
-    return nullptr;
-}
-
-void Engine::load_profiles() {
-    profiles_.clear();
-    // Les profils livres avec le binaire, puis ceux de l'utilisateur (qui
-    // peuvent redefinir les premiers).
-    load_profiles_from(exe_dir() + L"\\profiles");
-    load_profiles_from(data_dir() + L"\\profiles");
-}
-
-void Engine::load_profiles_from(const std::wstring& dir) {
-    if (!dir_exists(dir)) return;
-
-    WIN32_FIND_DATAW fd{};
-    HANDLE h = ::FindFirstFileW((dir + L"\\*.json").c_str(), &fd);
-    if (h == INVALID_HANDLE_VALUE) return;
-
-    do {
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-        const std::wstring full = dir + L"\\" + fd.cFileName;
-        auto text = read_text_file(full);
-        if (!text) continue;
-
-        std::string err;
-        auto j = Json::parse(*text, &err);
-        if (!j || !j->is_object()) {
-            log_warn("profil ignore ({}) : {}", narrow(full), err);
-            continue;
-        }
-        TuneProfile p;
-        p.name        = (*j)["name"].as_string();
-        p.title       = (*j)["title"].as_string(p.name);
-        p.description = (*j)["description"].as_string();
-        p.source      = full;
-        for (const auto& t : (*j)["tweaks"].items()) {
-            if (t.is_string()) p.tweaks.push_back(t.as_string());
-        }
-        if (p.name.empty() || p.tweaks.empty()) {
-            log_warn("profil ignore ({}) : nom ou liste de reglages manquants", narrow(full));
-            continue;
-        }
-        // Un profil utilisateur du meme nom remplace celui du binaire.
-        auto it = std::find_if(profiles_.begin(), profiles_.end(),
-                               [&](const TuneProfile& e) { return iequals(e.name, p.name); });
-        if (it != profiles_.end()) {
-            *it = std::move(p);
-        } else {
-            profiles_.push_back(std::move(p));
-        }
-    } while (::FindNextFileW(h, &fd));
-    ::FindClose(h);
 }
 
 Engine::Outcome Engine::apply_ids(const std::vector<std::string>& ids, const Options& opt) {
@@ -364,7 +291,6 @@ Engine::Outcome Engine::revert_all() {
     std::vector<std::string> ids = state_.applied_ids();
     std::reverse(ids.begin(), ids.end());
     Outcome out = revert_ids(ids);
-    state_.set_active_profile({});
     state_.save();
     DirtyFlag::clear();
     return out;

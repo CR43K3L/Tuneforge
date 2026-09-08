@@ -73,11 +73,16 @@ Le runtime C++ est lié statiquement : aucun VC++ Redistributable n'est requis c
 
 ## Interface graphique
 
-`tuneforge-gui.exe` — thème nocturne « Ardoise + cyan glacial », barre latérale, fenêtre
-sans chrome Windows, télémétrie en direct. Six pages : Tableau de bord, Réglages,
-Restauration, Profils, Matériel, Journal.
+`tuneforge-gui.exe` — fenêtre sans chrome Windows, barre latérale, télémétrie en direct.
+Six pages : Tableau de bord, Optimisations, Overclock GPU, Restauration, Matériel,
+Paramètres.
 
-La page **Réglages** ne présente pas un catalogue : elle déroule un **questionnaire**.
+Quatre thèmes sont livrés — Ardoise & cyan, Encre & violet, OLED & acier, Ardoise &
+magenta — et se choisissent dans **Paramètres**, avec l'échelle de l'interface et le
+journal. Les couleurs d'état (vert, ambre, rouge) sont identiques dans les quatre : une
+couleur, un sens.
+
+La page **Optimisations** ne présente pas un catalogue : elle déroule un **questionnaire**.
 Vous choisissez d'abord un niveau (Basique ou Expert, qui détermine la longueur du
 questionnaire), puis une question par réglage affiche côte à côte **ce qu'il apporte et ce
 qu'il coûte**, à hauteur égale. Rien n'est appliqué avant le récapitulatif final.
@@ -89,7 +94,7 @@ La page **Restauration** liste tout ce que Tuneforge a modifié et permet de l'a
 individuellement ou en bloc. Elle reste visible même quand il n'y a rien à restaurer —
 et explique alors pourquoi.
 
-Options de ligne de commande : `--page dashboard|reglages|quiz|restauration|profils|materiel|journal`.
+Options de ligne de commande : `--page dashboard|reglages|quiz|restauration|gpu|materiel|parametres`.
 
 Elle consomme **exactement le même cœur** que la ligne de commande : `Engine`,
 `hw::detect()`, les capteurs. Aucune logique n'y est dupliquée.
@@ -104,7 +109,6 @@ Le système de design complet est documenté dans [DESIGN.md](DESIGN.md).
 tuneforge detect      # matériel, système, sécurité, capacités
 tuneforge list        # catalogue des réglages et leur état actuel
 tuneforge list --all  # y compris ceux indisponibles sur cette machine
-tuneforge profiles    # profils livrés
 tuneforge status      # ce que Tuneforge a modifié ici
 tuneforge monitor     # télémétrie temps réel
 tuneforge report      # rapport de diagnostic JSON, anonyme
@@ -113,11 +117,10 @@ tuneforge report      # rapport de diagnostic JSON, anonyme
 ### Modification — élévation requise (relance UAC automatique)
 
 ```powershell
-tuneforge apply equilibre --dry-run      # simulation, n'écrit rien
-tuneforge apply equilibre                # profil sûr
-tuneforge apply jeu --advanced           # profil jeu, réglages avancés autorisés
+tuneforge apply gpu.hags.on --dry-run    # simulation, n'écrit rien
 tuneforge apply gpu.hags.on --advanced   # un réglage précis
-tuneforge apply jeu --advanced --watchdog 30
+tuneforge apply power.core_parking.off win.mmcss.games_task --advanced
+tuneforge apply gpu.hags.on --advanced --watchdog 30
 tuneforge revert gpu.hags.on             # restaure un réglage
 tuneforge revert --all                   # restaure tout
 tuneforge recover                        # répare un lot interrompu
@@ -165,28 +168,6 @@ Les écritures exigent les droits administrateur — sans quoi le pilote répond
 Les décalages d'horloge ajoutent un delta à la courbe tension/fréquence d'origine, ils ne
 la remplacent pas : le pilote continue de gérer les tensions correspondantes.
 
-## Profils
-
-| Profil | Contenu |
-|---|---|
-| `equilibre` | Uniquement des réglages sans effet de bord notable. À proposer par défaut à quelqu'un dont vous ne connaissez pas la machine. |
-| `jeu` | Équilibre + les réglages qui demandent un arbitrage (plan maximal, priorité premier plan, HAGS, ASPM PCIe, Nagle). Nécessite `--advanced`. |
-| `latence` | Jeu + les réglages qui échangent consommation et bruit contre réactivité. Sur beaucoup de configurations le gain est nul : à mesurer avant de garder. |
-
-Les profils sont de simples fichiers JSON dans `profiles/`. Un fichier du même nom déposé
-dans `%LOCALAPPDATA%\Tuneforge\profiles\` remplace celui livré.
-
-```json
-{
-  "name": "mon-profil",
-  "title": "Mon profil",
-  "description": "...",
-  "tweaks": ["power.core_parking.off", "win.mmcss.games_task"]
-}
-```
-
----
-
 ## Trois niveaux d'exposition
 
 | Niveau | Contenu | Déblocage |
@@ -232,7 +213,7 @@ d'utilisateur, ni numéro de série.
 tuneforge-reset.exe
 ```
 
-Il ne lit aucune configuration, ne dépend d'aucun profil, ne pose qu'une question,
+Il ne lit aucune configuration, ne pose qu'une question,
 et remet tout dans l'état capturé avant modification.
 
 ---
@@ -241,7 +222,7 @@ et remet tout dans l'état capturé avant modification.
 
 | Version | Contenu | Diffusion |
 |---|---|---|
-| **v0.1** ✅ | Détection, tweaks Windows réversibles, profils, instantanés, watchdog, monitoring, CLI | privée |
+| **v0.1** ✅ | Détection, tweaks Windows réversibles, instantanés, watchdog, monitoring, CLI | privée |
 | **v0.2** ✅ | Interface graphique (Dear ImGui + D3D11) sur le même cœur, système de design | privée |
 | **v0.3** ✅ | NVAPI sans driver : lecture, limite de puissance, décalages cœur/mémoire, ventilateurs. Courbe V/F reportée (voir plus bas) | cercle restreint |
 | **v0.5** | ADLX (AMD), abstraction matérielle éprouvée sur plusieurs configurations, rapports de diagnostic | bêta publique GitHub |

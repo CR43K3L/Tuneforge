@@ -67,4 +67,4 @@ Write-Host ''
 Write-Host 'Essayez :' -ForegroundColor Cyan
 Write-Host "  $bin\tuneforge.exe detect"
 Write-Host "  $bin\tuneforge.exe list"
-Write-Host "  $bin\tuneforge.exe apply equilibre --dry-run"
+Write-Host "  $bin\tuneforge.exe apply gpu.hags.on --advanced --dry-run"

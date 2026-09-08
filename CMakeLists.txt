@@ -106,21 +106,8 @@ if(EXISTS ${IMGUI_DIR}/imgui.cpp)
         src/ui/window.cpp
     )
     target_link_libraries(tuneforge-gui PRIVATE tfcore imgui)
-
-    add_custom_command(TARGET tuneforge-gui POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-                ${CMAKE_CURRENT_SOURCE_DIR}/profiles
-                $<TARGET_FILE_DIR:tuneforge-gui>/profiles
-        COMMENT "Copie des profils (GUI)")
 else()
     message(WARNING
         "Dear ImGui absent de third_party/imgui — l'interface graphique ne sera pas compilee.\n"
         "  git clone --depth 1 --branch v1.92.3 https://github.com/ocornut/imgui third_party/imgui")
 endif()
-
-# Profils livres a cote du binaire
-add_custom_command(TARGET tuneforge POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            ${CMAKE_CURRENT_SOURCE_DIR}/profiles
-            $<TARGET_FILE_DIR:tuneforge>/profiles
-    COMMENT "Copie des profils")

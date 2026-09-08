@@ -1,6 +1,6 @@
 #pragma once
 //
-// Moteur : catalogue, etat persiste, profils, filet de securite.
+// Moteur : catalogue, etat persiste, filet de securite.
 //
 // Trois mecanismes de securite, tous obligatoires des la v0.1 parce qu'ils
 // sont impossibles a rajouter proprement apres coup :
@@ -39,15 +39,11 @@ public:
 
     std::vector<std::string> applied_ids() const;
 
-    void        set_active_profile(std::string name) { active_profile_ = std::move(name); }
-    std::string active_profile() const { return active_profile_; }
-
     std::wstring path() const;
     const Json&  raw() const { return root_; }
 
 private:
-    Json        root_ = Json::object();
-    std::string active_profile_;
+    Json root_ = Json::object();
 };
 
 // ---------------------------------------------------------------------------
@@ -84,17 +80,6 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// Profils
-// ---------------------------------------------------------------------------
-struct TuneProfile {
-    std::string              name;
-    std::string              title;
-    std::string              description;
-    std::vector<std::string> tweaks;
-    std::wstring             source;
-};
-
-// ---------------------------------------------------------------------------
 // Moteur
 // ---------------------------------------------------------------------------
 class Engine {
@@ -105,9 +90,6 @@ public:
     const std::vector<TweakPtr>& tweaks() const { return tweaks_; }
     ITweak*                      find(std::string_view id);
     const ITweak*                find(std::string_view id) const;
-
-    const std::vector<TuneProfile>& profiles() const { return profiles_; }
-    const TuneProfile*              find_profile(std::string_view name) const;
 
     struct Options {
         bool dry_run = false;
@@ -138,12 +120,8 @@ public:
     Json diagnostic_report();
 
 private:
-    void load_profiles();
-    void load_profiles_from(const std::wstring& dir);
-
-    std::vector<TweakPtr>    tweaks_;
-    std::vector<TuneProfile> profiles_;
-    StateStore               state_;
+    std::vector<TweakPtr> tweaks_;
+    StateStore            state_;
 };
 
 } // namespace tf
