@@ -1,0 +1,15 @@
+{
+  "name": "equilibre",
+  "title": "Equilibre",
+  "description": "Uniquement des reglages Windows entierement reversibles, sans effet de bord notable. C'est le profil a proposer par defaut a quelqu'un dont vous ne connaissez pas la machine.",
+  "tweaks": [
+    "power.core_parking.off",
+    "power.boost.aggressive",
+    "power.usb_suspend.off",
+    "power.disk_timeout.never",
+    "win.power_throttling.off",
+    "win.mmcss.responsiveness",
+    "win.network_throttling.off",
+    "win.mmcss.games_task"
+  ]
+}

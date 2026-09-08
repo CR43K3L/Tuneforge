@@ -1,0 +1,20 @@
+{
+  "name": "jeu",
+  "title": "Jeu",
+  "description": "Equilibre, plus les reglages qui demandent un arbitrage : plan d'alimentation maximal, priorite au premier plan, HAGS, ASPM PCIe et Nagle. Necessite --advanced et un redemarrage pour tout activer.",
+  "tweaks": [
+    "power.plan.ultimate",
+    "power.core_parking.off",
+    "power.boost.aggressive",
+    "power.usb_suspend.off",
+    "power.disk_timeout.never",
+    "power.pcie_aspm.off",
+    "win.power_throttling.off",
+    "win.mmcss.responsiveness",
+    "win.network_throttling.off",
+    "win.mmcss.games_task",
+    "win.priority_separation",
+    "gpu.hags.on",
+    "net.nagle.off"
+  ]
+}

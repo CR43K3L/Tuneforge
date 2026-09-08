@@ -1,0 +1,15 @@
+# Normalisation des fins de ligne : le depot garde du LF, la copie de
+# travail Windows recoit du CRLF. Sans cela, chaque poste de contributeur
+# reecrirait le fichier entier au premier enregistrement.
+* text=auto
+
+*.ps1   text eol=crlf
+*.cpp   text
+*.hpp   text
+*.txt   text
+*.md    text
+*.json  text
+
+*.png   binary
+*.ico   binary
+*.ttf   binary

@@ -1,0 +1,88 @@
+#pragma once
+//
+// Composants de l'interface. Aucun n'ecrit de couleur en dur : tout vient de
+// theme.hpp. C'est ce qui permet de changer le theme en un seul endroit.
+//
+#include <string>
+
+#include "imgui.h"
+#include "ui/theme.hpp"
+
+namespace tf::ui {
+
+// --- Texte -----------------------------------------------------------------
+void TextAt(ImFont* font, float size, const ImVec4& color, const char* text);
+void Display(const char* text);                       // titre de page
+void H1(const char* text);                            // titre de section
+void CardTitle(const char* text);
+void Body(const char* text);
+void Muted(const char* text);
+void Small(const char* text, const ImVec4& color);
+void Mono(const char* text, const ImVec4& color);
+void SectionLabel(const char* text);                  // etiquette de groupe
+void WrappedMuted(const char* text, float wrap_width);
+
+// --- Primitives ------------------------------------------------------------
+void Divider(float vertical_margin = -1.0f);
+void VSpace(float h);
+void Dot(Status s, float radius = -1.0f, bool filled = true);
+void StatusPill(const char* text, Status s);
+void Badge(const char* text, const ImVec4& fg, const ImVec4& bg);
+
+// --- Cartes ----------------------------------------------------------------
+// Une carte englobe un bloc de contenu sur une surface elevee.
+bool BeginCard(const char* id, const ImVec2& size = ImVec2(0, 0), bool interactive = false);
+void EndCard();
+void CardHeader(const char* title, const char* subtitle = nullptr);
+
+// --- Navigation ------------------------------------------------------------
+bool NavItem(const char* label, bool selected, Status indicator = Status::Neutral);
+
+// --- Controles -------------------------------------------------------------
+bool Toggle(const char* id, bool* value, bool enabled = true);
+// Incrementeur segmente : « moins | valeur | plus » dans un seul cadre, pour
+// que l'ensemble se lise comme un controle et non comme trois elements poses
+// cote a cote. Renvoie -1, 0 ou +1.
+int Stepper(const char* id, const char* value, bool can_decrease, bool can_increase,
+            float width = 0.0f);
+
+bool PrimaryButton(const char* label, const ImVec2& size = ImVec2(0, 0), bool enabled = true);
+bool GhostButton(const char* label, const ImVec2& size = ImVec2(0, 0), bool enabled = true);
+bool DangerButton(const char* label, const ImVec2& size = ImVec2(0, 0), bool enabled = true);
+
+// --- Donnees ---------------------------------------------------------------
+// Tuile de mesure : libelle, valeur, unite, et une barre de remplissage
+// optionnelle (fraction < 0 pour la masquer).
+void MetricTile(const char* label, const char* value, const char* unit, float fraction,
+                Status s, const ImVec2& size);
+
+// Courbe compacte, sans echelle : reservee aux endroits ou seule la tendance
+// compte. Pour une valeur qu'on doit pouvoir lire, utiliser Chart.
+void Sparkline(const char* id, const float* values, int count, int offset, float vmin,
+               float vmax, const ImVec2& size, Status s);
+
+// Graphique lisible : graduations, echelle, valeur courante et fenetre
+// temporelle. Un graphe sans echelle est une decoration, pas une mesure.
+struct ChartOptions {
+    float       vmin = 0.0f;
+    float       vmax = 100.0f;
+    const char* unit = "%";
+    const char* x_label = nullptr;    // ex. « 40 dernieres secondes »
+    Status      status = Status::Accent;
+    int         grid_lines = 3;       // graduations intermediaires
+    bool        show_current = true;  // etiquette de la derniere mesure
+};
+
+// `values` est un tampon circulaire de `count` elements dont le plus recent est
+// a l'indice `offset - 1`.
+void Chart(const char* id, const float* values, int count, int offset, const ImVec2& size,
+           const ChartOptions& opt);
+
+void ProgressBar(float fraction, const ImVec2& size, Status s);
+
+// --- Divers ----------------------------------------------------------------
+void HelpMarker(const char* text);
+// Interpolation exponentielle stable quel que soit le pas de temps.
+float Animate(ImGuiID id, float target, float speed = 14.0f);
+
+} // namespace tf::ui
