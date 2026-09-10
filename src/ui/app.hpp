@@ -10,7 +10,7 @@
 #include <vector>
 
 #include "core/engine.hpp"
-#include "hw/nvapi.hpp"
+#include "hw/gpu.hpp"
 #include "hw/sensors.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
@@ -83,6 +83,8 @@ private:
     void PageTweaksDone();    // compte rendu apres application
     void PageGpu();           // reglages GPU volatiles (v0.3)
     void PageGpuFans(float width);   // carte ventilateurs : mode et courbe
+    // Pourquoi la courbe n ecrit rien, ou chaine vide si elle ecrit bien.
+    std::string FanCurveBlocker() const;
     void PageRestore();       // tout ce que Tuneforge peut annuler
     void BuildQuiz(OptLevel level);
     void PageHardware();
@@ -123,11 +125,11 @@ private:
     bool               has_nvml_ = false;
     float              cpu_mhz_ = -1.0f;
 
-    // NVAPI : reglages GPU volatiles. Rafraichi a cadence reduite, chaque
-    // appel traversant le pilote.
-    hw::Nvapi          nvapi_;
-    bool               has_nvapi_ = false;
-    double             last_nvapi_ = 0.0;
+    // Reglages GPU volatiles, par le controleur du fabricant detecte.
+    // Rafraichi a cadence reduite : chaque appel traverse le pilote.
+    std::unique_ptr<hw::IGpuController> gpu_ctl_;
+    std::string        gpu_absent_;   // pourquoi il n'y en a pas, le cas echeant
+    double             last_gpu_ = 0.0;
     int                power_target_ = 100;
     int                core_target_ = 0;
     int                mem_target_ = 0;

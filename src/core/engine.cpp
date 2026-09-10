@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 
+#include "hw/gpu.hpp"
 #include "hw/sensors.hpp"
 #include "platform/elevation.hpp"
 
@@ -320,6 +321,11 @@ Json Engine::diagnostic_report() {
     j.set("generated", timestamp_iso());
     j.set("elevated", is_elevated());
     j.set("hardware", hardware().to_json());
+
+    // Section GPU : ce qui a ete tente, par quelle liaison, et ce qui a
+    // echoue. C'est la partie du rapport qui sert a supporter une machine
+    // qu'on n'a pas — un « non supporte » sans raison n'apprend rien.
+    j.set("gpu", hw::gpu_diagnostic_json());
 
     Json jt = Json::array();
     const hw::Profile& p = hardware();

@@ -45,6 +45,7 @@ add_library(tfcore STATIC
     src/hw/hardware.cpp
     src/hw/sensors.cpp
     src/hw/nvapi.cpp
+    src/hw/gpu.cpp
     src/core/tweaks.cpp
     src/core/engine.cpp
 )

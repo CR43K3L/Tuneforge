@@ -38,7 +38,7 @@ const char* page_subtitle(Page p) {
     switch (p) {
         case Page::Dashboard: return "Telemetrie en direct et etat du systeme";
         case Page::Tweaks:    return "Un questionnaire vous guide reglage par reglage";
-        case Page::Gpu:       return "Reglages NVIDIA volatiles, perdus au redemarrage";
+        case Page::Gpu:       return "Reglages GPU volatiles, perdus au redemarrage";
         case Page::Restore:   return "Tout ce que Tuneforge peut remettre en etat";
         case Page::Hardware:  return "Ce que Tuneforge a detecte sur cette machine";
         case Page::Settings:  return "Theme, taille de l'interface et journal";
@@ -164,10 +164,10 @@ bool App::Init(Window* window) {
     counters_.sample();
     cpu_freq_.init(engine_->hardware().cpu.base_mhz);
 
-    has_nvapi_ = nvapi_.init() && nvapi_.refresh();
-    if (has_nvapi_ && !nvapi_.gpus().empty()) {
+    gpu_ctl_ = hw::make_gpu_controller(&gpu_absent_);
+    if (gpu_ctl_ && gpu_ctl_->gpu_count() > 0) {
         // Les curseurs partent des valeurs reellement en place, pas de zeros.
-        const auto& g = nvapi_.gpus()[0];
+        const auto& g = gpu_ctl_->gpu(0);
         if (g.power.valid) power_target_ = static_cast<int>(g.power.current_pct);
         if (g.offsets.valid) {
             core_target_ = g.offsets.graphics_delta_khz / 1000;
@@ -225,9 +225,9 @@ void App::SampleTelemetry() {
     }
 
     // NVAPI traverse le pilote a chaque appel : une seconde suffit largement.
-    if (has_nvapi_ && page_ == Page::Gpu && now - last_nvapi_ > 1.0) {
-        last_nvapi_ = now;
-        nvapi_.refresh();
+    if (gpu_ctl_ && page_ == Page::Gpu && now - last_gpu_ > 1.0) {
+        last_gpu_ = now;
+        gpu_ctl_->refresh();
     }
 
     if (has_nvml_) {
@@ -1210,15 +1210,18 @@ bool ThemedSlider(const char* id, const char* label, int* value, int vmin, int v
 // Ventilateurs : mode et courbe
 // ---------------------------------------------------------------------------
 void App::PageGpuFans(float width) {
-    const hw::NvGpu& g = nvapi_.gpus()[0];
-    const bool can_write = elevated_ && nvapi_.can_set_fan();
+    const hw::GpuReading& g = gpu_ctl_->gpu(0);
+    const bool can_write = elevated_ && gpu_ctl_->capabilities().set_fan;
     char buf[96];
 
     if (!BeginCard("##gpu_fan", ImVec2(width, 0))) { EndCard(); return; }
     const float inner = ImGui::GetContentRegionAvail().x;
 
-    CardHeader("Ventilateurs",
-               "NVAPI ne confie pas de courbe au pilote : Tuneforge la tient lui-meme.");
+    char sub[128];
+    std::snprintf(sub, sizeof(sub),
+                  "%s ne confie pas de courbe au pilote : Tuneforge la tient lui-meme.",
+                  gpu_ctl_->backend_name());
+    CardHeader("Ventilateurs", sub);
 
     // --- Mode ---------------------------------------------------------------
     const float mw = (std::min)(160.0f * M().scale, (inner - M().sp_sm * 2) / 3.0f);
@@ -1256,7 +1259,7 @@ void App::PageGpuFans(float width) {
 
     // Le defaut d elevation est deja annonce par le bandeau en haut de page :
     // le repeter ici ne ferait que doubler le meme message.
-    if (elevated_ && !nvapi_.can_set_fan()) {
+    if (elevated_ && !gpu_ctl_->capabilities().set_fan) {
         VSpace(M().sp_sm);
         Small("Ecriture des ventilateurs indisponible sur cette carte.", P().warn);
     }
@@ -1280,7 +1283,7 @@ void App::PageGpuFans(float width) {
             VSpace(M().sp_md);
             ImGui::BeginDisabled(!can_write);
             if (PrimaryButton("Appliquer##fan")) {
-                Result r = nvapi_.set_fan_level_pct(0, static_cast<uint32_t>(fan_target_));
+                Result r = gpu_ctl_->set_fan_level_pct(0, static_cast<uint32_t>(fan_target_));
                 fans_taken_ = fans_taken_ || static_cast<bool>(r);
                 Notify(r ? std::format("Ventilateurs a {} %.", fan_target_)
                          : "Ventilateurs : " + r.message,
@@ -1329,11 +1332,18 @@ void App::PageGpuFans(float width) {
 
             VSpace(M().sp_sm);
             Small("DERNIER NIVEAU ECRIT", P().text_muted);
+            const std::string blocker = FanCurveBlocker();
             if (fan_curve_written_ >= 0) {
                 std::snprintf(buf, sizeof(buf), "%d %%", fan_curve_written_);
                 Mono(buf, P().text_secondary);
+            } else if (blocker.empty()) {
+                Mono("en attente", P().text_disabled);
             } else {
                 Mono("aucun", P().text_disabled);
+            }
+            if (!blocker.empty()) {
+                VSpace(M().sp_xs);
+                WrappedMuted(blocker.c_str(), side);
             }
 
             VSpace(M().sp_md);
@@ -1359,14 +1369,26 @@ void App::PageGpuFans(float width) {
 // seulement quand l'ecart le justifie, sinon chaque image traverserait le
 // pilote pour rien.
 // ---------------------------------------------------------------------------
+std::string App::FanCurveBlocker() const {
+    if (!gpu_ctl_ || gpu_ctl_->gpu_count() == 0) return "Aucun controleur GPU.";
+    if (!elevated_) {
+        return "Droits administrateur requis : le pilote refuse la consigne sans eux.";
+    }
+    if (!gpu_ctl_->capabilities().set_fan) {
+        return "Cette carte n'expose pas de pilotage des ventilateurs.";
+    }
+    if (fan_curve_.size() < 2) return "Courbe incomplete.";
+    if (!gpu_ctl_->gpu(0).thermal.valid) {
+        return "Temperature du GPU illisible : la courbe n'a rien sur quoi s'appuyer.";
+    }
+    return {};
+}
+
 void App::ApplyFanCurve() {
     if (fan_mode_ != FanMode::Curve) return;
-    if (!has_nvapi_ || nvapi_.gpus().empty()) return;
-    if (!elevated_ || !nvapi_.can_set_fan()) return;
-    if (fan_curve_.size() < 2) return;
+    if (!FanCurveBlocker().empty()) return;
 
-    const hw::NvGpu& g = nvapi_.gpus()[0];
-    if (!g.thermal.valid) return;
+    const hw::GpuReading& g = gpu_ctl_->gpu(0);
 
     const double now = ImGui::GetTime();
     if (now - last_curve_ < 2.0) return;   // deux secondes suffisent a suivre
@@ -1379,7 +1401,7 @@ void App::ApplyFanCurve() {
     // tranquille. Suivre la courbe au point pres le ferait chanter.
     if (fan_curve_written_ >= 0 && std::abs(target - fan_curve_written_) < 3) return;
 
-    Result r = nvapi_.set_fan_level_pct(0, static_cast<uint32_t>(target));
+    Result r = gpu_ctl_->set_fan_level_pct(0, static_cast<uint32_t>(target));
     if (r) {
         fan_curve_written_ = target;
         fans_taken_ = true;
@@ -1395,8 +1417,8 @@ void App::ApplyFanCurve() {
 
 void App::ReleaseFans() {
     if (!fans_taken_) return;
-    if (!has_nvapi_ || nvapi_.gpus().empty()) return;
-    Result r = nvapi_.set_fan_auto(0);
+    if (!gpu_ctl_ || gpu_ctl_->gpu_count() == 0) return;
+    Result r = gpu_ctl_->set_fan_auto(0);
     if (r) {
         log_info("ventilateurs rendus au pilote");
         fans_taken_ = false;
@@ -1416,27 +1438,23 @@ App::~App() {
 void App::PageGpu() {
     const float total = ImGui::GetContentRegionAvail().x;
 
-    if (!has_nvapi_) {
-        if (BeginCard("##nognv", ImVec2(total, 0))) {
+    if (!gpu_ctl_ || gpu_ctl_->gpu_count() == 0) {
+        if (BeginCard("##nogpu", ImVec2(total, 0))) {
             const float inner = ImGui::GetContentRegionAvail().x;
-            CardHeader("GPU NVIDIA indisponible");
-            WrappedMuted(nvapi_.load_error().empty()
-                             ? "NVAPI n'a pas pu etre initialise sur cette machine."
-                             : nvapi_.load_error().c_str(),
+            CardHeader("Aucun reglage GPU disponible");
+            // La raison exacte, pas un message generique : sur une machine
+            // qu'on n'a pas sous la main, c'est la seule chose qui permettra
+            // de comprendre ce qui manque.
+            WrappedMuted(gpu_absent_.empty()
+                             ? "Aucun controleur GPU n'a pu etre initialise."
+                             : gpu_absent_.c_str(),
                          inner);
         }
         EndCard();
         return;
     }
-    if (nvapi_.gpus().empty()) {
-        if (BeginCard("##nogpu", ImVec2(total, 0))) {
-            CardHeader("Aucun GPU NVIDIA detecte");
-        }
-        EndCard();
-        return;
-    }
 
-    const hw::NvGpu& g = nvapi_.gpus()[0];
+    const hw::GpuReading& g = gpu_ctl_->gpu(0);
     char buf[96];
 
     // --- Elevation ----------------------------------------------------------
@@ -1507,9 +1525,10 @@ void App::PageGpu() {
 
     // Une ligne de texte discrete plutot que trois pastilles : ces trois faits
     // sont du contexte permanent, ils n'ont pas a peser autant qu'un etat.
+    const std::string drv = gpu_ctl_->driver_version();
     std::snprintf(buf, sizeof(buf), "Volatile, perdu au redemarrage   ·   Sans driver noyau"
-                                    "   ·   Pilote %s",
-                  nvapi_.driver_version().empty() ? "inconnu" : nvapi_.driver_version().c_str());
+                                    "   ·   %s %s",
+                  gpu_ctl_->backend_name(), drv.empty() ? "(version inconnue)" : drv.c_str());
     Small(buf, P().text_muted);
 
     VSpace(gap);
@@ -1542,14 +1561,15 @@ void App::PageGpu() {
             VSpace(M().sp_md);
             ImGui::BeginDisabled(!can_write);
             if (PrimaryButton("Appliquer##pl")) {
-                Result r = nvapi_.set_power_limit_pct(0, static_cast<float>(power_target_));
+                Result r = gpu_ctl_->set_power_limit_pct(0,
+                                                         static_cast<float>(power_target_));
                 Notify(r ? std::format("Limite de puissance a {} %.", power_target_)
                          : "Limite de puissance : " + r.message,
                        r ? Status::Ok : Status::Danger);
             }
             ImGui::SameLine(0, M().sp_sm);
             if (GhostButton("Defaut##pl")) {
-                Result r = nvapi_.set_power_limit_pct(0, g.power.default_pct);
+                Result r = gpu_ctl_->set_power_limit_pct(0, g.power.default_pct);
                 power_target_ = static_cast<int>(g.power.default_pct);
                 Notify(r ? "Limite de puissance revenue au defaut."
                          : "Limite de puissance : " + r.message,
@@ -1584,10 +1604,10 @@ void App::PageGpu() {
             VSpace(M().sp_md);
             ImGui::BeginDisabled(!can_write);
             if (PrimaryButton("Appliquer##clk")) {
-                Result rc = nvapi_.set_clock_offset_mhz(0, hw::NvClockDomain::Graphics,
-                                                        core_target_);
-                Result rm = nvapi_.set_clock_offset_mhz(0, hw::NvClockDomain::Memory,
-                                                        mem_target_);
+                Result rc = gpu_ctl_->set_clock_offset_mhz(
+                    0, hw::GpuClockDomain::Graphics, core_target_);
+                Result rm = gpu_ctl_->set_clock_offset_mhz(
+                    0, hw::GpuClockDomain::Memory, mem_target_);
                 if (rc && rm) {
                     Notify(std::format("Decalages appliques : coeur {:+} MHz, memoire {:+} MHz.",
                                        core_target_, mem_target_),
@@ -1598,8 +1618,8 @@ void App::PageGpu() {
             }
             ImGui::SameLine(0, M().sp_sm);
             if (GhostButton("Remettre a zero##clk")) {
-                nvapi_.set_clock_offset_mhz(0, hw::NvClockDomain::Graphics, 0);
-                nvapi_.set_clock_offset_mhz(0, hw::NvClockDomain::Memory, 0);
+                gpu_ctl_->set_clock_offset_mhz(0, hw::GpuClockDomain::Graphics, 0);
+                gpu_ctl_->set_clock_offset_mhz(0, hw::GpuClockDomain::Memory, 0);
                 core_target_ = 0;
                 mem_target_ = 0;
                 Notify("Decalages remis a zero.", Status::Ok);

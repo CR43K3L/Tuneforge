@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "common/util.hpp"
+#include "hw/gpu.hpp"
 
 namespace tf::hw {
 
@@ -34,94 +35,19 @@ struct NvapiEntryPoint {
     bool        resolved = false;
 };
 
-struct NvClocks {
-    bool     valid = false;
-    uint32_t graphics_khz = 0;
-    uint32_t memory_khz = 0;
-    uint32_t processor_khz = 0;
-    uint32_t video_khz = 0;
-};
-
-struct NvThermal {
-    bool    valid = false;
-    int32_t gpu_c = 0;      // capteur GPU
-    int32_t memory_c = 0;   // -1 si absent
-    int32_t power_supply_c = 0;
-    int32_t board_c = 0;
-    int     sensor_count = 0;
-};
-
-// Limite de puissance. NVAPI la compte en millipourcents de la valeur par
-// defaut : 100000 = 100 %. On expose des pourcentages, et on conserve la
-// valeur brute pour l'ecriture a venir.
-struct NvPowerLimit {
-    bool     valid = false;
-    float    current_pct = 0.0f;
-    float    min_pct = 0.0f;
-    float    default_pct = 0.0f;
-    float    max_pct = 0.0f;
-    uint32_t raw_current = 0;
-    uint32_t raw_min = 0;
-    uint32_t raw_max = 0;
-    bool     editable = false;
-};
-
-struct NvCooler {
-    uint32_t index = 0;
-    uint32_t current_level = 0;   // %
-    uint32_t min_level = 0;
-    uint32_t max_level = 0;
-    uint32_t current_policy = 0;      // 1 = manuel, 32 = automatique
-    bool     policy_known = false;    // l'API recente ne la rapporte pas
-    bool     range_known = false;     // idem pour les bornes de niveau
-    bool     active = false;
-};
-
-struct NvCoolers {
-    bool                  valid = false;
-    std::vector<NvCooler> items;
-    uint32_t              tach_rpm = 0;
-    bool                  tach_valid = false;
-};
-
-// Decalages d'horloge appliques par rapport a la courbe d'origine, en kHz.
-// C'est ce que manipule un undervolt ou un overclock : la courbe elle-meme
-// n'est jamais remplacee, on lui applique un delta.
-struct NvClockOffsets {
-    bool    valid = false;
-    bool    editable = false;
-    int32_t graphics_delta_khz = 0;
-    int32_t memory_delta_khz = 0;
-    int32_t graphics_min_khz = 0;
-    int32_t graphics_max_khz = 0;
-    int32_t memory_min_khz = 0;
-    int32_t memory_max_khz = 0;
-    uint32_t pstate_count = 0;
-    // Valeur du champ version que le pilote a acceptee en lecture : l'ecriture
-    // doit employer exactement la meme, sinon elle est rejetee.
-    uint32_t accepted_version = 0;
-};
-
-enum class NvClockDomain { Graphics, Memory };
-
-// Tension du rail principal, lue en direct. C'est la mesure de reference pour
-// juger d'un undervolt : la frequence seule ne dit rien.
-struct NvVoltage {
-    bool     valid = false;
-    uint32_t microvolts = 0;
-    float    volts() const { return microvolts / 1e6f; }
-};
-
-struct NvGpu {
-    void*       handle = nullptr;
-    std::string name;
-    NvVoltage   voltage;
-    NvClocks       clocks;
-    NvThermal      thermal;
-    NvPowerLimit   power;
-    NvCoolers      coolers;
-    NvClockOffsets offsets;
-};
+// Vocabulaire commun a tous les fabricants. NVAPI a servi de modele a ces
+// structures : les noms d'origine restent en alias, ce qui evite de toucher a
+// nvapi.cpp — mille lignes de retro-ingenierie deja validees sur une vraie
+// carte, qu'un renommage massif ne ferait que fragiliser.
+using NvClocks       = GpuClocks;
+using NvThermal      = GpuThermal;
+using NvPowerLimit   = GpuPowerLimit;
+using NvCooler       = GpuCooler;
+using NvCoolers      = GpuCoolers;
+using NvClockOffsets = GpuClockOffsets;
+using NvVoltage      = GpuVoltage;
+using NvClockDomain  = GpuClockDomain;
+using NvGpu          = GpuReading;
 
 class Nvapi {
 public:
@@ -170,7 +96,7 @@ public:
     //
     // Un niveau manuel inferieur a 30 % est refuse : arreter les ventilateurs
     // pendant une charge est le seul moyen d'abimer quelque chose ici.
-    static constexpr uint32_t kMinManualFanPct = 30;
+    static constexpr uint32_t kMinManualFanPct = IGpuController::kMinManualFanPct;
     Result set_fan_level_pct(size_t gpu_index, uint32_t level_pct);
     Result set_fan_auto(size_t gpu_index);
     bool   can_set_fan() const;
@@ -205,5 +131,49 @@ private:
 
 // Texte lisible pour un code de retour NVAPI.
 std::string nvapi_status_text(int status);
+
+// ---------------------------------------------------------------------------
+// Adaptateur vers l'interface commune
+// ---------------------------------------------------------------------------
+// Nvapi reste utilisable directement pour ce qui lui est propre : la table des
+// points d'entree et les outils de sondage n'ont aucun equivalent chez AMD, et
+// les faire remonter dans IGpuController aurait impose a chaque fabricant un
+// vocabulaire qui n'est pas le sien.
+class NvapiController final : public IGpuController {
+public:
+    bool init() { return nv_.init(); }
+
+    GpuVendor   vendor() const override { return GpuVendor::Nvidia; }
+    const char* backend_name() const override { return "NVAPI"; }
+    std::string driver_version() const override { return nv_.driver_version(); }
+
+    bool              refresh() override { return nv_.refresh(); }
+    size_t            gpu_count() const override { return nv_.gpus().size(); }
+    const GpuReading& gpu(size_t index) const override { return nv_.gpus()[index]; }
+    GpuCapabilities   capabilities() const override;
+
+    Result set_power_limit_pct(size_t i, float pct) override {
+        return nv_.set_power_limit_pct(i, pct);
+    }
+    Result set_clock_offset_mhz(size_t i, GpuClockDomain d, int32_t mhz) override {
+        return nv_.set_clock_offset_mhz(i, d, mhz);
+    }
+    Result set_fan_level_pct(size_t i, uint32_t lvl) override {
+        return nv_.set_fan_level_pct(i, lvl);
+    }
+    Result set_fan_auto(size_t i) override { return nv_.set_fan_auto(i); }
+
+    // La table des points d'entree resolus. C'est l'information la plus utile
+    // d'un rapport NVIDIA : une fonction non resolue explique d'un coup
+    // pourquoi telle capacite manque sur telle version de pilote.
+    Json backend_details() const override;
+
+    // Acces a la liaison brute, pour les diagnostics propres a NVIDIA.
+    Nvapi&       raw() { return nv_; }
+    const Nvapi& raw() const { return nv_; }
+
+private:
+    Nvapi nv_;
+};
 
 } // namespace tf::hw

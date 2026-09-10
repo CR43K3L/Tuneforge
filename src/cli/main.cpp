@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "core/engine.hpp"
+#include "hw/gpu.hpp"
 #include "hw/nvapi.hpp"
 #include "hw/sensors.hpp"
 #include "platform/elevation.hpp"
@@ -528,28 +529,38 @@ int cmd_gpu(const Args& a) {
     return 0;
 }
 
+// Ouvre le controleur de la carte principale, ou explique pourquoi il n'y en
+// a pas. La raison vient du controleur lui-meme : elle nomme le fabricant
+// detecte, ce qui evite le « indisponible » sec que personne ne sait
+// interpreter a distance.
+std::unique_ptr<hw::IGpuController> open_gpu() {
+    std::string why;
+    auto        ctl = hw::make_gpu_controller(&why);
+    if (!ctl || ctl->gpu_count() == 0) {
+        outln(std::string(C_RED) + "  " + (why.empty() ? "Aucun controleur GPU." : why) +
+              C_RESET);
+        return nullptr;
+    }
+    return ctl;
+}
+
 // ---------------------------------------------------------------------------
 // Ecriture de la limite de puissance GPU. Reglage volatile : il disparait au
-// redemarrage, ce qui en fait le point d'entree le plus sur de la v0.3.
+// redemarrage, ce qui en fait le point d'entree le plus sur.
 int cmd_gpu_power(const Args& a) {
-    hw::Nvapi nv;
     outln();
-    if (!nv.init() || !nv.refresh()) {
-        outln(std::string(C_RED) + "  NVAPI indisponible : " + nv.load_error() + C_RESET);
-        return 1;
-    }
-    if (nv.gpus().empty()) {
-        outln(std::string(C_RED) + "  Aucun GPU NVIDIA." + C_RESET);
-        return 1;
-    }
-    if (!nv.can_set_power_limit()) {
+    auto ctl = open_gpu();
+    if (!ctl) return 1;
+
+    if (!ctl->capabilities().set_power_limit) {
         outln(std::string(C_RED) +
-              "  Ecriture indisponible : NvAPI_GPU_ClientPowerPoliciesSetStatus non resolu." +
+              std::format("  Limite de puissance non pilotable par {} sur cette carte.",
+                          ctl->backend_name()) +
               C_RESET);
         return 1;
     }
 
-    const auto& g = nv.gpus()[0];
+    const auto& g = ctl->gpu(0);
     if (!g.power.valid) {
         outln(std::string(C_RED) + "  Limite de puissance non lisible : ecriture refusee." +
               C_RESET);
@@ -586,14 +597,14 @@ int cmd_gpu_power(const Args& a) {
         return 0;
     }
 
-    Result r = nv.set_power_limit_pct(0, target);
+    Result r = ctl->set_power_limit_pct(0, target);
     if (!r) {
         outln(std::string(C_RED) + "  Echec : " + r.message + C_RESET);
         outln();
         return 1;
     }
     outln(std::string(C_GREEN) +
-          std::format("  Applique : {:.0f} %", nv.gpus()[0].power.current_pct) + C_RESET);
+          std::format("  Applique : {:.0f} %", ctl->gpu(0).power.current_pct) + C_RESET);
 
     // Chien de garde : sans confirmation, on revient a la valeur d'avant.
     const int wd = a.watchdog > 0 ? a.watchdog : 15;
@@ -603,8 +614,8 @@ int cmd_gpu_power(const Args& a) {
                           C_RESET));
         outln("  Tapez O puis Entree pour conserver, ou ne faites rien pour revenir en arriere.");
 
-        Watchdog guard(wd, [&nv, before]() {
-            Result rb = nv.set_power_limit_pct(0, before);
+        Watchdog guard(wd, [&ctl, before]() {
+            Result rb = ctl->set_power_limit_pct(0, before);
             outln();
             outln(std::string(C_RED) +
                   std::format("  Delai ecoule : retour a {:.0f} %{}", before,
@@ -619,7 +630,7 @@ int cmd_gpu_power(const Args& a) {
             if (line == "O" || line == "o" || line == "y" || line == "Y") {
                 outln(std::string(C_GREEN) + "  Conserve." + C_RESET);
             } else {
-                Result rb = nv.set_power_limit_pct(0, before);
+                Result rb = ctl->set_power_limit_pct(0, before);
                 outln(std::format("  Non confirme : retour a {:.0f} %{}", before,
                                   rb ? "" : " (ECHEC)"));
             }
@@ -637,19 +648,19 @@ int cmd_gpu_power(const Args& a) {
 // ---------------------------------------------------------------------------
 // Decalages d'horloge GPU. Volatile, comme la limite de puissance.
 int cmd_gpu_clock(const Args& a) {
-    hw::Nvapi nv;
     outln();
-    if (!nv.init() || !nv.refresh() || nv.gpus().empty()) {
-        outln(std::string(C_RED) + "  NVAPI indisponible : " + nv.load_error() + C_RESET);
-        return 1;
-    }
-    if (!nv.can_set_clock_offset()) {
+    auto ctl = open_gpu();
+    if (!ctl) return 1;
+
+    if (!ctl->capabilities().set_clock_offset) {
         outln(std::string(C_RED) +
-              "  Ecriture indisponible : NvAPI_GPU_SetPstates20 non resolu." + C_RESET);
+              std::format("  Decalages d'horloge non pilotables par {} sur cette carte.",
+                          ctl->backend_name()) +
+              C_RESET);
         return 1;
     }
 
-    const auto& g = nv.gpus()[0];
+    const auto& g = ctl->gpu(0);
     if (!g.offsets.valid) {
         outln(std::string(C_RED) + "  Decalages non lisibles : ecriture refusee." + C_RESET);
         return 1;
@@ -698,12 +709,12 @@ int cmd_gpu_clock(const Args& a) {
     auto apply = [&](bool with_core, int32_t c, bool with_mem, int32_t m) -> bool {
         bool ok = true;
         if (with_core) {
-            Result r = nv.set_clock_offset_mhz(0, hw::NvClockDomain::Graphics, c);
+            Result r = ctl->set_clock_offset_mhz(0, hw::GpuClockDomain::Graphics, c);
             if (!r) { outln(std::string(C_RED) + "  Graphique : " + r.message + C_RESET); ok = false; }
             else outln(std::string(C_GREEN) + std::format("  Graphique : {:+} MHz", c) + C_RESET);
         }
         if (with_mem) {
-            Result r = nv.set_clock_offset_mhz(0, hw::NvClockDomain::Memory, m);
+            Result r = ctl->set_clock_offset_mhz(0, hw::GpuClockDomain::Memory, m);
             if (!r) { outln(std::string(C_RED) + "  Memoire : " + r.message + C_RESET); ok = false; }
             else outln(std::string(C_GREEN) + std::format("  Memoire   : {:+} MHz", m) + C_RESET);
         }
@@ -753,18 +764,19 @@ int cmd_gpu_clock(const Args& a) {
 // Controle des ventilateurs. Volatile, avec retour automatique au mode
 // automatique si l'utilisateur ne confirme pas.
 int cmd_gpu_fan(const Args& a) {
-    hw::Nvapi nv;
     outln();
-    if (!nv.init() || !nv.refresh() || nv.gpus().empty()) {
-        outln(std::string(C_RED) + "  NVAPI indisponible : " + nv.load_error() + C_RESET);
-        return 1;
-    }
-    if (!nv.can_set_fan()) {
-        outln(std::string(C_RED) + "  Controle des ventilateurs non resolu." + C_RESET);
+    auto ctl = open_gpu();
+    if (!ctl) return 1;
+
+    if (!ctl->capabilities().set_fan) {
+        outln(std::string(C_RED) +
+              std::format("  Ventilateurs non pilotables par {} sur cette carte.",
+                          ctl->backend_name()) +
+              C_RESET);
         return 1;
     }
 
-    const auto& g = nv.gpus()[0];
+    const auto& g = ctl->gpu(0);
     outln(std::format("  {}", g.name));
     for (const auto& c : g.coolers.items) {
         outln(std::format("    Ventilateur {}  niveau {} %, {}", c.index, c.current_level,
@@ -797,21 +809,21 @@ int cmd_gpu_fan(const Args& a) {
         return 0;
     }
 
-    Result r = automatic ? nv.set_fan_auto(0) : nv.set_fan_level_pct(0, level);
+    Result r = automatic ? ctl->set_fan_auto(0) : ctl->set_fan_level_pct(0, level);
     if (!r) {
         outln(std::string(C_RED) + "  Echec : " + r.message + C_RESET);
         // En cas de doute sur la disposition, on rend la main au pilote.
-        if (!automatic) nv.set_fan_auto(0);
+        if (!automatic) ctl->set_fan_auto(0);
         outln();
         return 1;
     }
     outln(std::string(C_GREEN) + "  Applique." + C_RESET);
-    for (const auto& c : nv.gpus()[0].coolers.items) {
+    for (const auto& c : ctl->gpu(0).coolers.items) {
         outln(std::format("    Ventilateur {}  niveau {} %, {}", c.index, c.current_level,
                           c.active ? "actif" : "arrete"));
     }
-    if (nv.gpus()[0].coolers.tach_valid) {
-        outln(std::format("    Tachymetre     {} tr/min", nv.gpus()[0].coolers.tach_rpm));
+    if (ctl->gpu(0).coolers.tach_valid) {
+        outln(std::format("    Tachymetre     {} tr/min", ctl->gpu(0).coolers.tach_rpm));
     }
 
     if (!automatic && !a.yes) {
@@ -821,8 +833,8 @@ int cmd_gpu_fan(const Args& a) {
                           C_RESET));
         outln("  Tapez O puis Entree pour conserver, sinon retour au mode automatique.");
 
-        Watchdog guard(wd, [&nv]() {
-            nv.set_fan_auto(0);
+        Watchdog guard(wd, [&ctl]() {
+            ctl->set_fan_auto(0);
             outln();
             outln(std::string(C_RED) + "  Delai ecoule : retour au mode automatique." + C_RESET);
         });
@@ -833,7 +845,7 @@ int cmd_gpu_fan(const Args& a) {
             if (line == "O" || line == "o" || line == "y" || line == "Y") {
                 outln(std::string(C_GREEN) + "  Conserve." + C_RESET);
             } else {
-                nv.set_fan_auto(0);
+                ctl->set_fan_auto(0);
                 outln("  Non confirme : retour au mode automatique.");
             }
         }
