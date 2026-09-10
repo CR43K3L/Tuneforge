@@ -257,11 +257,89 @@ et remet tout dans l'état capturé avant modification.
 | **v0.1** ✅ | Détection, tweaks Windows réversibles, instantanés, watchdog, monitoring, CLI | privée |
 | **v0.2** ✅ | Interface graphique (Dear ImGui + D3D11) sur le même cœur, système de design | privée |
 | **v0.3** ✅ | NVAPI sans driver : lecture, limite de puissance, décalages cœur/mémoire, ventilateurs. Courbe V/F reportée (voir plus bas) | cercle restreint |
-| **v0.5** | ADLX (AMD), abstraction matérielle éprouvée sur plusieurs configurations, rapports de diagnostic | bêta publique GitHub |
+| **v0.5** 🚧 | Couche GPU indépendante du fabricant ✅ · rapports de diagnostic ✅ · sondage AMD ✅ · réglage AMD en attente d'une carte dédiée | bêta publique GitHub |
 | **v1.0** | Certificat de signature de code, installeur, mise à jour automatique, FR/EN | publique |
 
 Le passage v0.5 → v1.0 est celui où apparaissent tous les cas matériels imprévus.
 Il ne doit pas être sauté.
+
+
+---
+
+## Support multi-fabricants (v0.5, en cours)
+
+`src/hw/gpu.hpp` définit ce dont l'application a besoin — mesures, capacités,
+`IGpuController` — et chaque liaison s'y conforme. L'interface et la ligne de commande ne
+nomment plus aucun fabricant : elles demandent au contrôleur ce qu'il **sait faire**, et
+une capacité absente désactive la commande au lieu de la faire échouer au dernier moment.
+
+Le contrôleur est choisi d'après le fabricant réellement présent sur le bus PCI, pas selon
+une séquence fixe : charger `nvapi64.dll` sur une machine AMD ne renvoie rien d'utile et
+produirait un message d'erreur trompeur. Quand aucune liaison ne convient, **la raison est
+affichée et journalisée** — sur une machine qu'on n'a pas sous la main, c'est la seule
+chose qui permettra de comprendre.
+
+### Pourquoi ADL et pas ADLX
+
+ADLX est l'API moderne d'AMD, mais deux choses l'écartent pour l'instant :
+
+- Elle est distribuée sous un **accord de licence propriétaire** (un PDF ; GitHub ne lui
+  reconnaît aucune licence libre). Embarquer ses en-têtes dans un projet GPLv3 n'est pas
+  une décision qui se prend à la légère.
+- Son interface est faite d'objets à table de fonctions virtuelles. En reconstruire les
+  tables sans les en-têtes officielles reviendrait à **deviner un ordre d'appel** : se
+  tromper d'une entrée, c'est appeler une autre fonction que celle voulue. Ce projet
+  s'interdit déjà exactement cela côté NVIDIA.
+
+ADL, elle, est une API C plate : des fonctions indépendantes résolues une à une par
+`GetProcAddress` dans `atiadlxx.dll`, exactement comme `nvapi64.dll`. Le précédent
+s'applique donc — liaison dynamique, aucune en-tête du fabricant embarquée.
+
+### Ce que le sondage AMD fait, et ne fait pas
+
+Il n'appelle **que des fonctions dont tous les paramètres sont des entiers** : nombre
+d'adaptateurs, état d'activité, capacités Overdrive. Aucune structure n'est échangée avec
+le pilote, donc aucune disposition n'est supposée — c'est ce qui le rend sûr à exécuter
+sur une machine inconnue. Il ne règle rien.
+
+Il répond à la seule question qui bloque la suite : **quelle génération d'Overdrive cette
+carte expose-t-elle ?** La réponse décide de ce qu'il faudra implémenter, et elle ne peut
+venir que de vraies machines AMD.
+
+Première mesure, sur un Radeon intégré (Ryzen 7 7800X3D, pilote ADLX 1.4.0.121) :
+
+| Indice | `ADL2_Adapter_Active_Get` | `ADL2_Overdrive_Caps` |
+|---|---|---|
+| 0 – 4 | OK | non supporté par cet adaptateur |
+| 5 – 8 | OK | indice d'adaptateur invalide |
+
+Deux enseignements, tous deux contre-intuitifs :
+
+1. `ADL2_Adapter_NumberOfAdapters_Get` annonce **neuf** adaptateurs, mais quatre indices
+   sur neuf sont ensuite rejetés comme invalides. **Le compte et l'espace d'indices ne
+   coïncident pas** : il faut interroger chaque indice et garder ceux qui répondent, pas
+   itérer aveuglément de 0 à N-1.
+2. `Active_Get` accepte des indices qu'`Overdrive_Caps` rejette ensuite. Aucune des deux
+   fonctions ne suffit donc à décider seule ce qu'est un adaptateur réel. Le rapport
+   publie **les deux codes bruts** plutôt que de trancher avec une règle inventée.
+
+Le « non supporté » sur un GPU intégré est la bonne réponse, pas une panne : ces puces
+n'ont pas d'Overdrive. **Le réglage AMD reste donc à écrire, et il ne sera pas écrit à
+l'aveugle** — il faut d'abord un rapport venant d'une carte AMD dédiée.
+
+### Le rapport de diagnostic
+
+C'est la pièce qui débloque le reste. `tuneforge report` produit maintenant une section
+`gpu` : cartes vues sur le bus, liaison retenue ou raison de son absence, capacités
+réellement obtenues, sondage AMD, et le détail propre à la liaison — pour NVAPI, la table
+des points d'entrée, qui explique d'un coup pourquoi telle capacité manque sur telle
+version de pilote.
+
+```powershell
+tuneforge report mon-rapport.json
+```
+
+Aucun nom d'utilisateur, aucun numéro de série.
 
 ---
 

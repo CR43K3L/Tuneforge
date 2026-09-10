@@ -7,6 +7,7 @@
 //
 #include "hw/gpu.hpp"
 
+#include "hw/adl.hpp"
 #include "hw/nvapi.hpp"
 
 namespace tf::hw {
@@ -85,8 +86,33 @@ std::unique_ptr<IGpuController> make_gpu_controller(std::string* why_not) {
     // chose qu'un testeur AMD verra, et il doit comprendre que le manque vient
     // de Tuneforge et non de son materiel.
     if (has_vendor(GpuVendor::Amd)) {
-        return fail("carte AMD detectee — la liaison ADLX n'est pas encore livree "
-                    "(prevue en v0.5)");
+        const AdlProbe p = probe_adl();
+        std::string    detail;
+        if (!p.loaded) {
+            detail = p.error;
+        } else {
+            int od = 0;
+            for (const auto& a : p.adapters) {
+                if (a.overdrive_supported) od = a.overdrive_version;
+            }
+            if (od) {
+                detail = "ADL repond, Overdrive version " + std::to_string(od) +
+                         " — le reglage n'est pas encore implemente";
+            } else {
+                // La raison exacte du refus, pas un simple « rien trouve » :
+                // « non supporte par cet adaptateur » sur un GPU integre est
+                // une reponse correcte, pas une panne.
+                int worst = 0;
+                for (const auto& a : p.adapters) {
+                    // -5 signale un indice qu'ADL ne connait pas : ce n'est pas
+                    // un verdict sur le materiel, seulement sur l'indice.
+                    if (a.caps_status != 0 && a.caps_status != -5) worst = a.caps_status;
+                }
+                detail = std::string("ADL repond mais aucun Overdrive expose (") +
+                         adl_status_text(worst) + ")";
+            }
+        }
+        return fail("carte AMD detectee : " + detail);
     }
     if (has_vendor(GpuVendor::Intel)) {
         return fail("carte Intel detectee — aucun reglage GPU n'est prevu pour ce "
@@ -174,6 +200,16 @@ Json gpu_diagnostic_json() {
         detected.push(std::move(e));
     }
     j.set("detected", std::move(detected));
+
+    // Sondage AMD, qu'un controleur ait ete trouve ou non. Sur une machine
+    // NVIDIA avec un Radeon integre il documente le materiel secondaire ;
+    // sur une machine purement AMD, c'est la seule chose qui dira quelle
+    // generation d'Overdrive il faudra implementer.
+    for (const auto& g : detect().gpus) {
+        if (g.vendor != GpuVendor::Amd) continue;
+        j.set("amd_probe", adl_probe_json(probe_adl()));
+        break;
+    }
 
     std::string why;
     auto        ctl = make_gpu_controller(&why);
