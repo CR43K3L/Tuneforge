@@ -1,5 +1,7 @@
 # Tuneforge
 
+[![build](https://github.com/CR43K3L/Tuneforge/actions/workflows/build.yml/badge.svg)](https://github.com/CR43K3L/Tuneforge/actions/workflows/build.yml)
+
 Outil d'optimisation Windows **entièrement réversible**, écrit en C++20, sans driver noyau.
 
 > ⚠️ **v0.1 — usage privé.** Cette version n'est pas signée et n'est pas destinée
@@ -53,7 +55,7 @@ Dear ImGui est un sous-module, nécessaire à l'interface graphique. Clonez avec
 `--recursive` :
 
 ```powershell
-git clone --recursive https://github.com/<compte>/Tuneforge
+git clone --recursive https://github.com/CR43K3L/Tuneforge
 cd Tuneforge
 .\build.ps1
 ```
