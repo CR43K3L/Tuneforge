@@ -17,8 +17,18 @@ jobs:
           # ligne de commande et l'interface passerait au travers de la CI.
           submodules: recursive
 
+      # Pas de generateur impose : l'image du runner change de version de
+      # Visual Studio sans preavis (elle est passee de 2022 a plus recent, et
+      # « -G "Visual Studio 17 2022" » a cesse de trouver quoi que ce soit).
+      # CMake choisit celui qui est reellement installe.
       - name: Configurer
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+        run: cmake -S . -B build -A x64
+
+      - name: Generateur retenu
+        shell: pwsh
+        run: |
+          Select-String -Path build/CMakeCache.txt -Pattern '^CMAKE_GENERATOR:' |
+            ForEach-Object { $_.Line }
 
       - name: Compiler
         run: cmake --build build --config Release --parallel

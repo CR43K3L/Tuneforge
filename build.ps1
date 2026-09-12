@@ -51,7 +51,10 @@ if (-not $vsPath) { throw 'Composant VC++ absent de l''installation Visual Studi
 Write-Host "Toolchain : $vsPath" -ForegroundColor DarkGray
 Write-Host "Configuration : $Config" -ForegroundColor Cyan
 
-& $cmake -S $root -B $build -G 'Visual Studio 17 2022' -A x64
+# Aucun generateur impose : le nom depend de la version de Visual Studio
+# installee, et l'imposer fait echouer la compilation chez quiconque n'a pas
+# exactement la meme. CMake retient celui qu'il trouve.
+& $cmake -S $root -B $build -A x64
 if ($LASTEXITCODE -ne 0) { throw 'Echec de la configuration CMake.' }
 
 & $cmake --build $build --config $Config --parallel
