@@ -11,7 +11,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Dear ImGui est un sous-module : sans ceci, CMake ne compile que la
           # ligne de commande et l'interface passerait au travers de la CI.
@@ -72,20 +72,27 @@ jobs:
       - name: Refus des commandes d'ecriture mal formees
         shell: pwsh
         run: |
-          # Doit repondre 2 (argument manquant) sans demander l'elevation.
-          ./build/bin/tuneforge.exe apply --no-elevate
-          if ($LASTEXITCODE -ne 2) { throw "code attendu 2, obtenu $LASTEXITCODE" }
-          ./build/bin/tuneforge.exe revert --no-elevate
-          if ($LASTEXITCODE -ne 2) { throw "code attendu 2, obtenu $LASTEXITCODE" }
+          # « apply » et « revert » sans argument doivent repondre 2 (argument
+          # manquant) SANS ouvrir d'invite d'elevation.
+          foreach ($cmd in 'apply', 'revert') {
+            ./build/bin/tuneforge.exe $cmd --no-elevate | Out-Null
+            $code = $LASTEXITCODE
+            if ($code -ne 2) { throw "$cmd : code attendu 2, obtenu $code" }
+            "$cmd sans argument -> $code, comme attendu"
+          }
+          # Indispensable : Actions propage le dernier code de sortie, et il
+          # vaut 2 par construction ici. Sans cette ligne l'etape echoue alors
+          # que l'assertion est justement que le code vaut 2.
+          exit 0
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: tuneforge-windows-x64
           path: build/bin/*.exe
 
       # Le rapport produit sur une machine sans GPU supporte est justement ce
       # qu'on ne peut pas obtenir autrement : il est conserve.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: rapport-machine-sans-gpu
           path: ci-report.json
