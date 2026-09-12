@@ -4,6 +4,9 @@
 #include <cmath>
 #include <cstdio>
 
+#include <windows.h>
+#include <shellapi.h>
+
 #include "imgui_internal.h"
 #include "platform/elevation.hpp"
 #include "ui/widgets.hpp"
@@ -41,7 +44,7 @@ const char* page_subtitle(Page p) {
         case Page::Gpu:       return "Reglages GPU volatiles, perdus au redemarrage";
         case Page::Restore:   return "Tout ce que Tuneforge peut remettre en etat";
         case Page::Hardware:  return "Ce que Tuneforge a detecte sur cette machine";
-        case Page::Settings:  return "Theme, taille de l'interface et journal";
+        case Page::Settings:  return "Theme, taille de l'interface, diagnostic et journal";
     }
     return "";
 }
@@ -1991,10 +1994,23 @@ void App::PageSettings() {
 
     VSpace(M().sp_lg);
 
-    // --- Journal ------------------------------------------------------------
-    SectionLabel("Journal");
+    // --- Diagnostic ----------------------------------------------------------
+    SectionLabel("Diagnostic");
     VSpace(M().sp_sm);
-    DrawJournal();
+    if (BeginCard("##set_report", ImVec2(total, 0))) {
+        const float inner = ImGui::GetContentRegionAvail().x;
+        if (PrimaryButton("Generer un rapport")) WriteDiagnosticReport();
+        VSpace(M().sp_sm);
+        Small("Materiel, etat des reglages, capteurs et diagnostic GPU, dans un fichier "
+              "JSON.",
+              P().text_muted);
+        VSpace(M().sp_xs);
+        WrappedMuted("Ni nom d'utilisateur, ni numero de serie. Les identifiants propres a "
+                     "la machine — GUID du plan d'alimentation, des interfaces reseau — "
+                     "sont remplaces par des jetons numerotes avant l'ecriture.",
+                     inner);
+    }
+    EndCard();
 
     VSpace(M().sp_lg);
 
@@ -2010,6 +2026,44 @@ void App::PageSettings() {
         StatusPill("Aucun driver noyau", Status::Ok);
     }
     EndCard();
+
+    VSpace(M().sp_lg);
+
+    // --- Journal --------------------------------------------------------------
+    // En dernier : c'est le bloc le plus haut de la page, et le moins souvent
+    // consulte. Le placer plus tot repoussait tout le reste sous le pli.
+    SectionLabel("Journal");
+    VSpace(M().sp_sm);
+    DrawJournal();
+}
+
+
+// ---------------------------------------------------------------------------
+// Rapport de diagnostic
+//
+// Ecrit a cote des donnees plutot que dans un dossier choisi : une boite de
+// dialogue de sauvegarde ferait un pas de plus a franchir pour la seule chose
+// qu'on demande aux testeurs de faire. L'explorateur s'ouvre sur le fichier,
+// il n'y a plus qu'a le joindre.
+// ---------------------------------------------------------------------------
+void App::WriteDiagnosticReport() {
+    const std::wstring path =
+        data_dir() + L"\\rapport-" + widen(timestamp_compact()) + L".json";
+
+    const Json report = engine_->diagnostic_report();
+    if (!write_text_file(path, report.dump(2))) {
+        log_error("rapport non ecrit : {}", narrow(path));
+        Notify("Le rapport n'a pas pu etre ecrit. Voir le journal.", Status::Danger);
+        return;
+    }
+    log_info("rapport de diagnostic ecrit : {}", narrow(path));
+
+    // « /select, » ouvre le dossier avec le fichier deja mis en evidence :
+    // l'utilisateur n'a pas a le chercher parmi les autres.
+    ::ShellExecuteW(nullptr, L"open", L"explorer.exe", (L"/select," + path).c_str(),
+                    nullptr, SW_SHOWNORMAL);
+
+    Notify("Rapport ecrit dans " + narrow(data_dir()) + ".", Status::Ok);
 }
 
 // ===========================================================================

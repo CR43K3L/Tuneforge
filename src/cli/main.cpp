@@ -351,8 +351,13 @@ int cmd_report(Engine& e, const Args& a) {
     outln();
     outln(std::format("  Rapport ecrit : {}", narrow(path)));
     outln(std::string(C_DIM) +
-          "  Il contient le materiel, l'etat des reglages et les capteurs — "
-          "aucun nom d'utilisateur, aucun numero de serie." + C_RESET);
+          "  Materiel, etat des reglages, capteurs et diagnostic GPU." + C_RESET);
+    outln(std::string(C_DIM) +
+          "  Ni nom d'utilisateur, ni numero de serie. Les identifiants propres a la "
+          "machine" + C_RESET);
+    outln(std::string(C_DIM) +
+          "  (GUID de plan d'alimentation, d'interfaces reseau) sont remplaces par des "
+          "jetons numerotes." + C_RESET);
     outln();
     return 0;
 }

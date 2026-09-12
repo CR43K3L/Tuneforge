@@ -90,6 +90,7 @@ private:
     void PageHardware();
     void PageSettings();      // theme, echelle, journal
     void DrawJournal();       // rendu du journal, affiche dans les parametres
+    void WriteDiagnosticReport();   // ecrit le rapport et l'ouvre dans l'explorateur
     void SaveUiPrefs();
 
     // Applique la courbe si elle est active : lit la temperature, calcule le

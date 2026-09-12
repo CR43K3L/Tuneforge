@@ -3,7 +3,9 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <map>
 
 #include "hw/gpu.hpp"
 #include "hw/sensors.hpp"
@@ -16,6 +18,84 @@ constexpr int kStateVersion = 1;
 
 std::wstring state_path()  { return data_dir() + L"\\state.json"; }
 std::wstring dirty_path()  { return data_dir() + L"\\apply.lock"; }
+
+
+// ---------------------------------------------------------------------------
+// Anonymisation du rapport
+// ---------------------------------------------------------------------------
+// Le rapport est fait pour etre envoye a quelqu'un d'autre. Or les
+// instantanes contiennent des GUID d'interfaces reseau et celui du plan
+// d'alimentation duplique : des identifiants stables propres a la machine.
+// Aucun ne sert au diagnostic — le nom du reglage dit deja de quoi il s'agit,
+// et « scheme_name » donne le plan en clair. Ils sont donc remplaces par des
+// jetons numerotes, la numerotation preservant le fait que deux occurrences
+// designent ou non la meme chose.
+//
+// Ce masquage ne concerne QUE le rapport : state.json garde les vraies
+// valeurs, sans lesquelles la restauration ne retrouverait plus rien.
+bool is_hex_run(const std::string& s, size_t pos, size_t n) {
+    if (pos + n > s.size()) return false;
+    for (size_t i = 0; i < n; ++i) {
+        if (!std::isxdigit(static_cast<unsigned char>(s[pos + i]))) return false;
+    }
+    return true;
+}
+
+// Un GUID canonique : 8-4-4-4-12 chiffres hexadecimaux.
+bool guid_at(const std::string& s, size_t pos) {
+    static constexpr size_t kGroups[] = {8, 4, 4, 4, 12};
+    size_t                  p = pos;
+    for (size_t g = 0; g < 5; ++g) {
+        if (!is_hex_run(s, p, kGroups[g])) return false;
+        p += kGroups[g];
+        if (g < 4) {
+            if (p >= s.size() || s[p] != '-') return false;
+            ++p;
+        }
+    }
+    return true;
+}
+
+constexpr size_t kGuidLen = 36;
+
+std::string mask_guids(const std::string& in, std::map<std::string, std::string>& seen) {
+    std::string out;
+    out.reserve(in.size());
+    for (size_t i = 0; i < in.size();) {
+        if (guid_at(in, i)) {
+            const std::string g = in.substr(i, kGuidLen);
+            auto              it = seen.find(g);
+            if (it == seen.end()) {
+                it = seen.emplace(g, "anonyme-" + std::to_string(seen.size() + 1)).first;
+            }
+            out += it->second;
+            i += kGuidLen;
+        } else {
+            out += in[i];
+            ++i;
+        }
+    }
+    return out;
+}
+
+Json anonymise(const Json& j, std::map<std::string, std::string>& seen) {
+    switch (j.type()) {
+        case Json::Type::String:
+            return Json(mask_guids(j.as_string(), seen));
+        case Json::Type::Array: {
+            Json out = Json::array();
+            for (const auto& e : j.items()) out.push(anonymise(e, seen));
+            return out;
+        }
+        case Json::Type::Object: {
+            Json out = Json::object();
+            for (const auto& [k, v] : j.fields()) out.set(k, anonymise(v, seen));
+            return out;
+        }
+        default:
+            return j;
+    }
+}
 
 } // namespace
 
@@ -367,7 +447,13 @@ Json Engine::diagnostic_report() {
         }
         j.set("sensors", std::move(jr));
     }
-    return j;
+
+    // Dernier geste, sur le rapport complet : un masquage applique a la fin
+    // couvre aussi les sections qu'on ajoutera plus tard sans y penser.
+    std::map<std::string, std::string> seen;
+    Json anonymous = anonymise(j, seen);
+    anonymous.set("anonymised_identifiers", static_cast<int64_t>(seen.size()));
+    return anonymous;
 }
 
 } // namespace tf
