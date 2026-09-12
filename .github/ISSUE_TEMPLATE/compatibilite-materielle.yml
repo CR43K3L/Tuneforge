@@ -1,0 +1,72 @@
+name: Rapport de compatibilité matérielle
+description: Dire à Tuneforge ce qu'il trouve sur votre machine. C'est la contribution la plus utile.
+title: "[Matériel] "
+labels: ["compatibilite"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Tuneforge n'a été développé et testé que sur **une seule machine** : un Ryzen 7 7800X3D
+        avec une RTX 4070 SUPER. Tout le reste est de la théorie.
+
+        Le réglage des cartes **AMD dédiées** en particulier n'est pas encore écrit, et il ne
+        sera pas écrit à l'aveugle : il attend un rapport venant d'une vraie carte.
+
+  - type: textarea
+    id: rapport
+    attributes:
+      label: Le rapport de diagnostic
+      description: |
+        Dans Tuneforge : **Paramètres → Diagnostic → Générer un rapport**. L'explorateur
+        s'ouvre sur le fichier, glissez-le ici.
+
+        En ligne de commande : `tuneforge report mon-rapport.json`
+
+        Le fichier ne contient ni nom d'utilisateur, ni numéro de série. Les identifiants
+        propres à votre machine (GUID de plan d'alimentation, d'interfaces réseau) sont
+        remplacés par des jetons numérotés avant l'écriture. Il contient en revanche le
+        modèle de votre carte mère, de votre GPU et de votre RAM — si cela vous gêne,
+        ouvrez-le et retirez ce qui vous dérange : un rapport partiel vaut mieux que rien.
+      placeholder: Glissez le fichier .json ici, ou collez son contenu.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: fonctionnement
+    attributes:
+      label: Tuneforge a-t-il démarré ?
+      options:
+        - Oui, tout s'affiche
+        - Oui, mais une page est vide ou affiche une erreur
+        - Non, il ne démarre pas
+    validations:
+      required: true
+
+  - type: textarea
+    id: anomalie
+    attributes:
+      label: Ce qui n'allait pas
+      description: |
+        Si quelque chose s'est mal passé, dites quoi et à quel moment. Si tout allait bien,
+        laissez vide — le rapport suffit.
+      placeholder: |
+        Exemple : la page Overclock GPU affiche « carte AMD détectée » alors que j'ai une
+        RX 7900 XTX.
+
+  - type: textarea
+    id: journal
+    attributes:
+      label: Le journal (facultatif, mais précieux en cas de plantage)
+      description: |
+        `%LOCALAPPDATA%\Tuneforge\tuneforge.log` — ou **Paramètres → Journal** dans
+        l'application. Les dernières lignes suffisent.
+      render: text
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Avant d'envoyer
+      options:
+        - label: J'ai ouvert le rapport et je suis d'accord pour qu'il soit public.
+          required: true

@@ -343,6 +343,37 @@ Aucun nom d'utilisateur, aucun numéro de série.
 
 ---
 
+## Aider
+
+Tuneforge n'a été développé et testé que sur **une seule machine** : un Ryzen 7 7800X3D
+avec une RTX 4070 SUPER. Tout le reste est de la théorie, et la théorie n'a jamais fait
+tourner un ventilateur.
+
+La contribution la plus utile n'est pas du code, c'est **un rapport de diagnostic depuis
+une machine différente** :
+
+1. **Paramètres → Diagnostic → Générer un rapport** (ou `tuneforge report mon-rapport.json`)
+2. Ouvrez une issue « Rapport de compatibilité matérielle » et joignez le fichier
+
+Les configurations qui manquent, par ordre d'utilité :
+
+| Configuration | Ce qu'elle débloque |
+|---|---|
+| **GPU AMD dédié** | Le réglage AMD, aujourd'hui absent. Sans un rapport venant d'une vraie carte, il ne sera pas écrit — deviner l'API d'un fabricant est exactement ce que ce projet s'interdit. |
+| **Processeur Intel** | La détection CPU et les réglages d'alimentation n'ont jamais tourné sur autre chose qu'un Ryzen. |
+| **Portable** | Les plans d'alimentation, la gestion sur batterie et la suspension USB s'y comportent différemment. |
+| **GPU NVIDIA plus ancien** | Les identifiants NVAPI non documentés changent d'une génération de pilote à l'autre. Le rapport dit lesquels ont été résolus. |
+
+### Ce que la CI vérifie
+
+Le runner GitHub n'a **ni carte NVIDIA ni carte AMD** — c'est justement le cas qu'aucune
+machine de développement ne reproduit. Chaque compilation vérifie donc que les commandes
+de lecture aboutissent sur une machine sans GPU supporté, que le rapport dit *pourquoi*
+plutôt que de rester muet, et que les commandes d'écriture mal formées échouent avant de
+demander l'élévation. Le rapport produit dans ces conditions est conservé comme artefact.
+
+---
+
 ## Avertissement
 
 Cet outil modifie des réglages système. Bien qu'il capture l'état d'origine avant chaque

@@ -1,0 +1,57 @@
+name: Anomalie
+description: Quelque chose ne fonctionne pas comme annoncé.
+title: "[Bug] "
+labels: ["bug"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Si un réglage a laissé votre machine dans un mauvais état**, n'attendez pas de
+        réponse ici : lancez `tuneforge-reset.exe`, livré à côté de l'application. Il remet
+        tout dans l'état capturé avant modification, sans rien vous demander d'autre qu'une
+        confirmation, et rend au pilote les ventilateurs du GPU.
+
+  - type: textarea
+    id: attendu
+    attributes:
+      label: Ce que vous attendiez, et ce qui s'est passé
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Comment le reproduire
+      placeholder: |
+        1. Ouvrir Overclock GPU
+        2. Passer les ventilateurs en Courbe
+        3. ...
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Visible dans **Paramètres → À propos**, ou par `tuneforge --version`.
+      placeholder: "0.3.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: journal
+    attributes:
+      label: Le journal
+      description: |
+        `%LOCALAPPDATA%\Tuneforge\tuneforge.log`, ou **Paramètres → Journal**. Les lignes
+        autour de l'anomalie suffisent.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: rapport
+    attributes:
+      label: Rapport de diagnostic (facultatif)
+      description: |
+        **Paramètres → Diagnostic → Générer un rapport**. Utile dès que l'anomalie touche
+        le matériel ou le GPU.

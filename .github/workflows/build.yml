@@ -1,0 +1,81 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Dear ImGui est un sous-module : sans ceci, CMake ne compile que la
+          # ligne de commande et l'interface passerait au travers de la CI.
+          submodules: recursive
+
+      - name: Configurer
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Compiler
+        run: cmake --build build --config Release --parallel
+
+      - name: Verifier que les trois binaires sont la
+        shell: pwsh
+        run: |
+          $attendus = @('tuneforge.exe', 'tuneforge-gui.exe', 'tuneforge-reset.exe')
+          foreach ($nom in $attendus) {
+            $p = "build/bin/$nom"
+            if (-not (Test-Path $p)) { throw "$nom manquant" }
+            "{0}  {1:N0} Ko" -f $nom, ((Get-Item $p).Length / 1KB)
+          }
+
+      # Le runner n'a ni carte NVIDIA ni carte AMD. C'est precisement le cas
+      # qu'on ne peut pas reproduire sur une machine de developpement : ces
+      # commandes doivent aboutir et non planter, en annoncant simplement
+      # qu'aucun controleur GPU n'est disponible.
+      - name: Lecture sur une machine sans GPU supporte
+        shell: pwsh
+        run: |
+          ./build/bin/tuneforge.exe --version
+          ./build/bin/tuneforge.exe detect
+          ./build/bin/tuneforge.exe list --all
+          ./build/bin/tuneforge.exe status
+
+      - name: Rapport de diagnostic
+        shell: pwsh
+        run: |
+          ./build/bin/tuneforge.exe report ci-report.json
+          $r = Get-Content ci-report.json -Raw | ConvertFrom-Json
+          "controleur GPU : {0}" -f $(if ($r.gpu.controller) { $r.gpu.controller } else { 'aucun' })
+          "raison         : {0}" -f $r.gpu.unsupported_reason
+          # Le rapport doit rester lisible meme sans controleur : s'il ne
+          # contient aucune raison ET aucun controleur, il n'apprend rien a
+          # personne, ce qui est exactement le defaut qu'on veut eviter.
+          if (-not $r.gpu.controller -and -not $r.gpu.unsupported_reason) {
+            throw "rapport sans controleur ET sans raison : inexploitable"
+          }
+
+      - name: Refus des commandes d'ecriture mal formees
+        shell: pwsh
+        run: |
+          # Doit repondre 2 (argument manquant) sans demander l'elevation.
+          ./build/bin/tuneforge.exe apply --no-elevate
+          if ($LASTEXITCODE -ne 2) { throw "code attendu 2, obtenu $LASTEXITCODE" }
+          ./build/bin/tuneforge.exe revert --no-elevate
+          if ($LASTEXITCODE -ne 2) { throw "code attendu 2, obtenu $LASTEXITCODE" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tuneforge-windows-x64
+          path: build/bin/*.exe
+
+      # Le rapport produit sur une machine sans GPU supporte est justement ce
+      # qu'on ne peut pas obtenir autrement : il est conserve.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rapport-machine-sans-gpu
+          path: ci-report.json
