@@ -16,6 +16,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <functional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -91,10 +92,37 @@ public:
     ITweak*                      find(std::string_view id);
     const ITweak*                find(std::string_view id) const;
 
+    // Etape reellement franchie par apply_ids. Emise depuis l'interieur de
+    // la boucle, au moment ou l'operation a lieu — jamais avant, jamais pour
+    // decorer. Une interface qui s'y fie ne peut pas mentir sur ce qui se
+    // passe.
+    struct Progress {
+        enum class Phase {
+            Selecting,   // tri du lot, aucune ecriture
+            Marking,     // pose du drapeau de lot interrompu
+            Snapshot,    // capture de l'etat d'origine d'un reglage
+            Applying,    // ecriture d'un reglage
+            Saving,      // ecriture de l'etat sur disque
+            Clearing,    // levee du drapeau
+            Finished,
+        };
+        Phase       phase = Phase::Selecting;
+        std::string id;       // reglage concerne ; vide pour les phases globales
+        std::string title;    // libelle lisible du reglage
+        size_t      index = 0;  // rang dans le lot, a partir de 1
+        size_t      total = 0;
+        bool        failed = false;
+        std::string message;
+    };
+
+    using ProgressFn = std::function<void(const Progress&)>;
+
     struct Options {
         bool dry_run = false;
         bool allow_advanced = false;  // les reglages Tier::Advanced sont ignores sans ce drapeau
         bool allow_expert = false;
+        // Facultatif. Appele depuis le fil qui execute apply_ids.
+        ProgressFn on_progress;
     };
 
     struct Outcome {

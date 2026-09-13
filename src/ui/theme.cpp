@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 
 #include "common/util.hpp"
@@ -54,9 +55,13 @@ Palette make_palette(ThemeId id) {
         default:
             break;
     }
-    // Derivees de l'accent : recalculees pour rester coherentes.
+    // Derivees : recalculees pour qu'aucun theme n'ait a les redefinir.
     p.accent_subtle = WithAlpha(p.accent, 0.14f);
     p.accent_border = WithAlpha(p.accent, 0.38f);
+    p.glow          = WithAlpha(p.accent, 0.30f);
+    // La surface surelevee est la surface de carte eclaircie d'un cran, pas
+    // une couleur inventee : elle reste juste quel que soit le theme.
+    p.surface_raised = Mix(p.surface1, p.surface2, 0.55f);
     return p;
 }
 
@@ -94,6 +99,38 @@ ImFont* load_first(const char* const* candidates, int count, float size,
 }
 
 } // namespace
+
+namespace {
+const Motion g_motion;
+}  // namespace
+
+const Motion& MO() { return g_motion; }
+
+// Courbes d'interpolation. Toutes prennent et rendent une progression [0,1].
+float EaseOutCubic(float t) {
+    const float u = 1.0f - std::clamp(t, 0.0f, 1.0f);
+    return 1.0f - u * u * u;
+}
+
+float EaseInOutCubic(float t) {
+    t = std::clamp(t, 0.0f, 1.0f);
+    return t < 0.5f ? 4.0f * t * t * t : 1.0f - std::pow(-2.0f * t + 2.0f, 3.0f) * 0.5f;
+}
+
+// Depassement leger puis retour. Reserve a ce qui doit sembler avoir du
+// ressort — une coche qui apparait, une pastille qui se pose. Jamais sur une
+// mesure : un chiffre qui depasse sa valeur avant d'y revenir est un mensonge.
+float EaseOutBack(float t) {
+    t = std::clamp(t, 0.0f, 1.0f);
+    const float c1 = 1.70158f, c3 = c1 + 1.0f;
+    const float u = t - 1.0f;
+    return 1.0f + c3 * u * u * u + c1 * u * u;
+}
+
+float EaseOutExpo(float t) {
+    t = std::clamp(t, 0.0f, 1.0f);
+    return t >= 1.0f ? 1.0f : 1.0f - std::pow(2.0f, -10.0f * t);
+}
 
 ImU32  U32(const ImVec4& c) { return ImGui::ColorConvertFloat4ToU32(c); }
 

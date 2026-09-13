@@ -4,9 +4,12 @@
 // par tfcore (Engine, hw::detect, capteurs). Exactement les memes appels que
 // la ligne de commande.
 //
+#include <atomic>
 #include <deque>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "core/engine.hpp"
@@ -35,7 +38,7 @@ enum class Page { Dashboard, Tweaks, Gpu, Restore, Hardware, Settings };
 // Parcours de la page Reglages. Plutot que de demander un « niveau » abstrait,
 // on pose une question par reglage en montrant son gain ET sa contrepartie :
 // le consentement est ainsi donne reglage par reglage, en connaissance de cause.
-enum class TweakFlow { Intro, Question, Recap, Done };
+enum class TweakFlow { Intro, Question, Recap, Running, Done };
 
 enum class Answer { None, Yes, No };
 
@@ -80,6 +83,7 @@ private:
     void PageTweaksIntro();   // avertissement + lancement du questionnaire
     void PageTweaksQuiz();    // une question par reglage
     void PageTweaksRecap();   // recapitulatif avant application
+    void PageTweaksRunning(); // deroule des etapes reellement franchies
     void PageTweaksDone();    // compte rendu apres application
     void PageGpu();           // reglages GPU volatiles (v0.3)
     void PageGpuFans(float width);   // carte ventilateurs : mode et courbe
@@ -162,6 +166,22 @@ private:
     size_t                   quiz_index_ = 0;
     size_t                   quiz_already_ = 0;  // deja dans l'etat cible
     Engine::Outcome          last_outcome_;      // resultat de la derniere application
+
+    // --- Application en cours ------------------------------------------
+    // Le fil de travail possede le moteur pendant toute la duree de
+    // l'operation. Rien d'autre ne doit y toucher : la navigation est
+    // verrouillee tant que « apply_running_ » est vrai.
+    std::unique_ptr<std::thread> apply_thread_;
+    std::mutex                   apply_mutex_;
+    std::vector<StepItem>        apply_steps_;   // sous apply_mutex_
+    std::atomic<bool>            apply_running_{false};
+    std::atomic<bool>            apply_finished_{false};
+    Engine::Outcome              apply_outcome_;
+    bool                         apply_collected_ = false;
+    bool                         apply_reboot_ = false;
+
+    void StartApply(std::vector<std::string> ids, bool advanced, bool expert);
+    void PumpApply();   // recolte le resultat une fois le fil termine
 
     // Bandeau de notification ephemere.
     std::string notice_;

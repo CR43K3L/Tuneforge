@@ -61,8 +61,41 @@ struct Palette {
     ImVec4 danger_subtle = Hex(0xF87171, 0.14f);
 
     ImVec4 shadow        = Hex(0x000000, 0.55f);
-    ImVec4 scrim         = Hex(0x05080B, 0.72f);  // voile des boites modales
+    ImVec4 scrim         = Hex(0x05080B, 0.82f);  // voile des boites modales
+
+    // Profondeur et lumiere. Une interface « premium » ne se fait pas avec
+    // plus de couleurs mais avec plus de NIVEAUX : un fond, des surfaces qui
+    // s'en detachent a peine, et une lumiere rasante qui souligne les bords.
+    ImVec4 surface_raised = Hex(0x161D26);  // carte survolee ou mise en avant
+    ImVec4 hairline_top   = Hex(0xFFFFFF, 0.055f);  // filet clair en haut d'une carte
+    ImVec4 grid           = Hex(0xFFFFFF, 0.030f);  // graduations des graphiques
+    ImVec4 glow           = Hex(0x38BDF8, 0.30f);   // halo d'accent, derive
 };
+
+// ---------------------------------------------------------------------------
+// Mouvement
+// ---------------------------------------------------------------------------
+// Les durees sont des jetons au meme titre que les couleurs. Sans cela chaque
+// composant invente la sienne et l'ensemble parait desaccorde.
+//
+// Regle : au-dela de 300 ms une interaction directe (survol, clic, bascule)
+// commence a se sentir molle. Seules les transitions de PAGE et les entrees
+// de contenu s'autorisent davantage.
+struct Motion {
+    float instant = 0.08f;   // enfoncement d'un bouton, retour de curseur
+    float fast    = 0.14f;   // survol, bascule
+    float base    = 0.22f;   // apparition d'une carte, changement d'onglet
+    float slow    = 0.38f;   // entree de page, compteurs chiffres
+};
+
+const Motion& MO();
+
+// Courbes. « OutCubic » pour tout ce qui arrive (depart franc, arrivee douce),
+// « OutBack » uniquement pour ce qui doit sembler avoir du ressort.
+float EaseOutCubic(float t);
+float EaseInOutCubic(float t);
+float EaseOutBack(float t);
+float EaseOutExpo(float t);
 
 // ---------------------------------------------------------------------------
 // Jetons de dimension — deja multiplies par l'echelle DPI

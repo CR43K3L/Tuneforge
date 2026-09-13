@@ -280,6 +280,7 @@ void App::Notify(const std::string& text, Status s) {
 void App::Frame() {
     SampleTelemetry();
     ApplyFanCurve();
+    PumpApply();
 
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);
@@ -377,16 +378,31 @@ void App::DrawSidebar() {
     SectionLabel("Navigation");
     VSpace(M().sp_xs);
 
+    // Pendant une application, le moteur appartient au fil de travail. Le
+    // consulter ici serait une course de donnees : « applied_ids » parcourt un
+    // etat que ce fil est en train de modifier. La navigation est donc figee,
+    // ce qui est de toute facon le bon comportement au milieu d'une ecriture.
+    const bool busy = apply_running_.load();
+
     ImGui::PushItemWidth(M().sidebar_w - M().sp_md * 2);
+    ImGui::BeginDisabled(busy);
     for (const NavEntry& e : kNav) {
         ImGui::SetCursorPosX(M().sp_md);
         ImGui::PushID(static_cast<int>(e.page));
         Status ind = Status::Neutral;
-        if (e.page == Page::Tweaks && !engine_->state().applied_ids().empty()) ind = Status::Ok;
-        if (e.page == Page::Restore && DirtyFlag::exists()) ind = Status::Danger;
-        if (NavItem(e.label, page_ == e.page, ind)) page_ = e.page;
+        if (!busy) {
+            if (e.page == Page::Tweaks && !engine_->state().applied_ids().empty()) {
+                ind = Status::Ok;
+            }
+            if (e.page == Page::Restore && DirtyFlag::exists()) ind = Status::Danger;
+        }
+        if (NavItem(e.label, page_ == e.page, ind) && !busy && page_ != e.page) {
+            page_ = e.page;
+            BeginContentEpoch();   // les cartes de la nouvelle page rejouent leur entree
+        }
         ImGui::PopID();
     }
+    ImGui::EndDisabled();
     ImGui::PopItemWidth();
     ImGui::EndGroup();
 
@@ -427,6 +443,8 @@ void App::DrawContent() {
                 subtitle = "Ce que le reglage apporte, et ce qu'il coute"; break;
             case TweakFlow::Recap:
                 subtitle = "Relisez vos choix avant d'appliquer quoi que ce soit"; break;
+            case TweakFlow::Running:
+                subtitle = "Operations en cours, dans l'ordre reel d'execution"; break;
             case TweakFlow::Done:
                 subtitle = "Compte rendu de l'application"; break;
         }
@@ -436,6 +454,18 @@ void App::DrawContent() {
 
     VSpace(M().sp_lg);
     DrawNotice();
+
+    // Le rang de decalage des cartes repart de zero a chaque image : c'est un
+    // rang dans la page, pas un compteur d'apparitions.
+    ResetCardStagger();
+
+    // Transition de page : un fondu court sur tout le contenu, par-dessus
+    // lequel chaque carte joue sa propre entree decalee. Les deux se
+    // composent — l'opacite des cartes est relative a celle-ci.
+    const int   epoch = ContentEpoch();
+    const float page_t = EaseOutCubic(Timeline(
+        ImHashData(&epoch, sizeof(epoch), ImGui::GetID("##pagefade")), MO().fast));
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, page_t);
 
     // Colonne de contenu, marges laterales constantes.
     ImGui::SetCursorPosX(M().sp_xl);
@@ -451,6 +481,7 @@ void App::DrawContent() {
     }
     VSpace(M().sp_2xl);
     ImGui::EndChild();
+    ImGui::PopStyleVar();   // fondu de page
 
     ImGui::EndChild();
 }
@@ -488,47 +519,106 @@ void App::PageDashboard() {
     const hw::Profile& hwp = engine_->hardware();
     const float total = ImGui::GetContentRegionAvail().x;
     const float gap = M().sp_md;
-    const float tile_w = (total - gap * 3) / 4.0f;
-    const float tile_h = 84 * M().scale;
 
     char buf[96];
 
-    // --- Rangee de tuiles --------------------------------------------------
-    std::snprintf(buf, sizeof(buf), "%.0f", snapshot_.cpu_load_pct);
-    MetricTile("CHARGE CPU", buf, "%", static_cast<float>(snapshot_.cpu_load_pct) / 100.0f,
-               snapshot_.cpu_load_pct > 85 ? Status::Warn : Status::Accent,
-               ImVec2(tile_w, tile_h));
+    // --- Bandeau de jauges ---------------------------------------------------
+    // Cinq blocs de meme largeur : quatre mesures et l'etat des optimisations.
+    // Une jauge circulaire est preferee a une barre pour les taux d'occupation
+    // parce qu'on lit son remplissage d'un coup d'oeil, sans lire le chiffre.
+    // La memoire garde une barre : ce qui compte pour elle, c'est le rapport a
+    // une capacite totale, pas une fraction abstraite.
+    const float cell_w = (total - gap * 4) / 5.0f;
+    const float cell_h = 152 * M().scale;
+    const ImVec2 gsz(cell_w - M().sp_lg * 2, 92 * M().scale);
+
+    auto gauge_card = [&](const char* id, const char* label, float value, bool valid,
+                          float vmax, const char* unit, Status st, const char* caption) {
+        if (BeginCard(id, ImVec2(cell_w, cell_h))) {
+            GaugeOpts o;
+            o.vmax = vmax;
+            o.unit = unit;
+            o.status = st;
+            o.valid = valid;
+            o.caption = caption;
+            Gauge(id, label, value, gsz, o);
+        }
+        EndCard();
+    };
+
+    const float cpu = static_cast<float>(snapshot_.cpu_load_pct);
+    std::snprintf(buf, sizeof(buf), cpu_mhz_ > 0 ? "%.0f MHz" : "", cpu_mhz_);
+    gauge_card("##g_cpu", "PROCESSEUR", cpu, true, 100.0f, "%",
+               cpu > 85.0f ? Status::Warn : Status::Accent, cpu_mhz_ > 0 ? buf : nullptr);
     ImGui::SameLine(0, gap);
 
-    // La frequence remplace la temperature : elle est mesurable sans HWiNFO.
-    if (cpu_mhz_ > 0) {
-        std::snprintf(buf, sizeof(buf), "%.2f", cpu_mhz_ / 1000.0f);
-        const float base = static_cast<float>(hwp.cpu.base_mhz);
-        MetricTile("FREQUENCE CPU", buf, "GHz",
-                   base > 0 ? cpu_mhz_ / (base * 1.35f) : -1.0f, Status::Accent,
-                   ImVec2(tile_w, tile_h));
-    } else {
-        MetricTile("FREQUENCE CPU", "--", "", -1.0f, Status::Neutral, ImVec2(tile_w, tile_h));
-    }
-    ImGui::SameLine(0, gap);
-
-    std::snprintf(buf, sizeof(buf), "%.1f", snapshot_.ram_used_bytes / 1073741824.0);
-    MetricTile("MEMOIRE", buf, ("Go / " + human_bytes(snapshot_.ram_total_bytes) + " Go").c_str(),
-               static_cast<float>(snapshot_.ram_pct) / 100.0f,
-               snapshot_.ram_pct > 88 ? Status::Warn : Status::Accent, ImVec2(tile_w, tile_h));
-    ImGui::SameLine(0, gap);
-
+    char gcap[48] = "";
     if (has_nvml_ && gpu_.valid) {
-        std::snprintf(buf, sizeof(buf), "%u", gpu_.utilization_pct);
-        MetricTile("CHARGE GPU", buf, "%", gpu_.utilization_pct / 100.0f, Status::Accent,
-                   ImVec2(tile_w, tile_h));
-    } else {
-        MetricTile("CHARGE GPU", "--", "", -1.0f, Status::Neutral, ImVec2(tile_w, tile_h));
+        std::snprintf(gcap, sizeof(gcap), "%.0f W", gpu_.power_mw / 1000.0);
     }
+    const bool gpu_ok = has_nvml_ && gpu_.valid;
+    gauge_card("##g_gpu", "CARTE GRAPHIQUE",
+               gpu_ok ? static_cast<float>(gpu_.utilization_pct) : 0.0f, gpu_ok, 100.0f, "%",
+               Status::Accent, gcap[0] ? gcap : nullptr);
+    ImGui::SameLine(0, gap);
+
+    char rcap[48];
+    std::snprintf(rcap, sizeof(rcap), "%.1f / %s Go", snapshot_.ram_used_bytes / 1073741824.0,
+                  human_bytes(snapshot_.ram_total_bytes).c_str());
+    gauge_card("##g_ram", "MEMOIRE", static_cast<float>(snapshot_.ram_pct), true, 100.0f, "%",
+               snapshot_.ram_pct > 88 ? Status::Warn : Status::Accent, rcap);
+    ImGui::SameLine(0, gap);
+
+    // Temperature : celle du GPU est lisible sans rien installer, celle du CPU
+    // passe par le SMU et exige HWiNFO. On montre donc celle qu'on a
+    // reellement, et on nomme laquelle.
+    const bool tvalid = gpu_.valid && gpu_.temperature_c > 0;
+    const float tval = tvalid ? static_cast<float>(gpu_.temperature_c) : 0.0f;
+    gauge_card("##g_temp", "TEMPERATURE GPU", tval, tvalid, 100.0f, "°C",
+               tval > 83.0f ? Status::Danger : (tval > 75.0f ? Status::Warn : Status::Ok),
+               cpu_temp_ > 0 ? nullptr : "CPU : HWiNFO requis");
+    ImGui::SameLine(0, gap);
+
+    // --- Optimisations actives -----------------------------------------------
+    const size_t active = engine_->state().applied_ids().size();
+    const size_t catalogue = engine_->tweaks().size();
+    if (BeginCard("##g_opt", ImVec2(cell_w, cell_h))) {
+        const float inner = ImGui::GetContentRegionAvail().x;
+        Small("OPTIMISATIONS", P().text_muted);
+        VSpace(M().sp_sm);
+
+        // Le compteur glisse vers sa valeur : au retour de la page
+        // d'application, on voit le nombre monter, ce qui relie visiblement
+        // l'action a son effet.
+        const ImGuiID cid = ImGui::GetID("##optcount");
+        const int shown = static_cast<int>(std::lround(
+            SmoothValue(cid, static_cast<float>(active), 8.0f)));
+        std::snprintf(buf, sizeof(buf), "%d", shown);
+        TextAt(F().semibold, M().font_display, active ? P().text : P().text_disabled, buf);
+        ImGui::SameLine(0, M().sp_xs);
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + M().sp_sm);
+        std::snprintf(buf, sizeof(buf), "/ %zu", catalogue);
+        Small(buf, P().text_disabled);
+
+        VSpace(M().sp_sm);
+        ProgressTrack("##optbar",
+                      catalogue ? static_cast<float>(active) / catalogue : 0.0f, inner,
+                      active ? Status::Ok : Status::Neutral);
+
+        VSpace(M().sp_md);
+        if (DirtyFlag::exists()) {
+            StatusPill("Lot interrompu", Status::Danger);
+        } else if (active) {
+            StatusPill("Reversibles", Status::Ok);
+        } else {
+            StatusPill("Aucune appliquee", Status::Neutral);
+        }
+    }
+    EndCard();
 
     VSpace(gap);
 
-    // --- Graphiques --------------------------------------------------------
+    // --- Graphiques ----------------------------------------------------------
     // La fenetre affichee vaut kCapacity echantillons a 250 ms.
     const int window_s = History::kCapacity / 4;
     char x_label[48];
@@ -1073,11 +1163,13 @@ void App::PageTweaksRecap() {
 
         VSpace(M().sp_lg);
         std::snprintf(line, sizeof(line), "Appliquer les %zu reglages retenus", chosen.size());
-        if (PrimaryButton(line, ImVec2(0, 0), !chosen.empty())) {
+        if (PrimaryButton(line, ImVec2(0, 0), !chosen.empty() && !apply_running_,
+                          apply_running_ ? BtnState::Loading : BtnState::Idle)) {
             // Le questionnaire a montre la contrepartie de chaque reglage :
             // le consentement a deja ete donne, reglage par reglage.
-            ApplySelection(chosen, true, true);
-            flow_ = TweakFlow::Done;
+            StartApply(chosen, true, true);
+            flow_ = TweakFlow::Running;
+            BeginContentEpoch();
         }
         ImGui::SameLine(0, M().sp_sm);
         if (GhostButton("Revoir le questionnaire")) {
@@ -1100,6 +1192,7 @@ void App::PageTweaks() {
         case TweakFlow::Intro:    PageTweaksIntro(); break;
         case TweakFlow::Question: PageTweaksQuiz();  break;
         case TweakFlow::Recap:    PageTweaksRecap(); break;
+        case TweakFlow::Running:  PageTweaksRunning(); break;
         case TweakFlow::Done:     PageTweaksDone();  break;
     }
 }
@@ -1432,6 +1525,11 @@ void App::ReleaseFans() {
 }
 
 App::~App() {
+    // Detruire un std::thread encore joignable appelle std::terminate : on
+    // attend la fin de l'application en cours, qui est de toute facon en train
+    // d'ecrire dans le registre et ne doit pas etre coupee en deux.
+    if (apply_thread_ && apply_thread_->joinable()) apply_thread_->join();
+
     // Sans cela, fermer la fenetre laisserait les ventilateurs bloques au
     // dernier niveau ecrit — y compris apres la fin du processus.
     ReleaseFans();
@@ -1759,6 +1857,182 @@ bool App::ApplySelection(const std::vector<std::string>& ids, bool advanced, boo
     }
     RefreshLog();
     return !o.applied.empty();
+}
+
+// ===========================================================================
+// Application : fil de travail et deroule
+// ===========================================================================
+//
+// Les etapes affichees sont exactement celles que le moteur annonce, au moment
+// ou il les franchit. Aucune n'est ajoutee pour donner l'impression qu'il se
+// passe quelque chose : si l'operation est instantanee, l'etape passe au vert
+// instantanement, et c'est la verite.
+void App::StartApply(std::vector<std::string> ids, bool advanced, bool expert) {
+    last_outcome_ = Engine::Outcome{};
+    if (ids.empty()) return;
+    if (apply_running_) return;
+
+    if (!elevated_) {
+        Notify("Modification impossible sans elevation. Fermez Tuneforge et relancez-le "
+               "en tant qu'administrateur, ou utilisez la ligne de commande.",
+               Status::Warn);
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(apply_mutex_);
+        apply_steps_.clear();
+    }
+    apply_outcome_ = Engine::Outcome{};
+    apply_collected_ = false;
+    apply_finished_ = false;
+    apply_running_ = true;
+
+    Engine* engine = engine_.get();
+    apply_thread_ = std::make_unique<std::thread>([this, engine, ids, advanced, expert]() {
+        Engine::Options opt;
+        opt.allow_advanced = advanced;
+        opt.allow_expert = expert;
+        opt.on_progress = [this](const Engine::Progress& g) {
+            std::lock_guard<std::mutex> lock(apply_mutex_);
+
+            // Un echec porte sur l'etape en cours : il la marque, il n'en
+            // ouvre pas une nouvelle.
+            if (g.failed) {
+                if (!apply_steps_.empty()) {
+                    apply_steps_.back().state = StepState::Failed;
+                    apply_steps_.back().detail = g.message;
+                }
+                return;
+            }
+
+            // Toute etape precedente encore « en cours » est terminee : le
+            // moteur ne revient jamais en arriere.
+            for (auto& s : apply_steps_) {
+                if (s.state == StepState::Running) s.state = StepState::Done;
+            }
+            if (g.phase == Engine::Progress::Phase::Finished) return;
+
+            StepItem item;
+            item.state = StepState::Running;
+            switch (g.phase) {
+                case Engine::Progress::Phase::Selecting:
+                    item.label = "Analyse du lot";
+                    break;
+                case Engine::Progress::Phase::Marking:
+                    item.label = "Marquage du lot";
+                    item.detail = "reprise possible apres coupure";
+                    break;
+                case Engine::Progress::Phase::Snapshot:
+                    item.label = "Instantane : " + g.title;
+                    item.detail = std::format("{}/{}", g.index, g.total);
+                    break;
+                case Engine::Progress::Phase::Applying:
+                    item.label = "Application : " + g.title;
+                    item.detail = std::format("{}/{}", g.index, g.total);
+                    break;
+                case Engine::Progress::Phase::Saving:
+                    item.label = "Enregistrement de l'etat";
+                    break;
+                case Engine::Progress::Phase::Clearing:
+                    item.label = "Levee du marquage";
+                    break;
+                default:
+                    return;
+            }
+            apply_steps_.push_back(std::move(item));
+        };
+
+        Engine::Outcome o = engine->apply_ids(ids, opt);
+        {
+            std::lock_guard<std::mutex> lock(apply_mutex_);
+            for (auto& s : apply_steps_) {
+                if (s.state == StepState::Running) s.state = StepState::Done;
+            }
+            apply_outcome_ = o;
+        }
+        apply_finished_ = true;
+    });
+}
+
+// Recolte le resultat une fois le fil termine. Appelee a chaque image : c'est
+// le seul endroit ou le moteur redevient la propriete du fil de rendu.
+void App::PumpApply() {
+    if (!apply_running_ || !apply_finished_) return;
+
+    if (apply_thread_ && apply_thread_->joinable()) apply_thread_->join();
+    apply_thread_.reset();
+    apply_running_ = false;
+
+    last_outcome_ = apply_outcome_;
+    apply_reboot_ = apply_outcome_.needs_reboot;
+    apply_collected_ = true;
+
+    if (!apply_outcome_.failed.empty()) {
+        Notify("Echec : " + apply_outcome_.failed.front(), Status::Danger);
+    } else if (!apply_outcome_.applied.empty()) {
+        Notify(apply_outcome_.needs_reboot
+                   ? "Applique. Un redemarrage est necessaire pour que tout prenne effet."
+                   : "Applique.",
+               Status::Ok);
+    } else if (!apply_outcome_.skipped.empty()) {
+        Notify("Ignore : " + apply_outcome_.skipped.front(), Status::Warn);
+    } else {
+        Notify("Deja dans l'etat cible.", Status::Neutral);
+    }
+    RefreshLog();
+}
+
+void App::PageTweaksRunning() {
+    const float total = ImGui::GetContentRegionAvail().x;
+
+    std::vector<StepItem> steps;
+    {
+        std::lock_guard<std::mutex> lock(apply_mutex_);
+        steps = apply_steps_;
+    }
+
+    size_t done = 0;
+    bool   failed = false;
+    for (const auto& s : steps) {
+        if (s.state == StepState::Done) ++done;
+        if (s.state == StepState::Failed) failed = true;
+    }
+
+    if (BeginCard("##run", ImVec2(total, 0))) {
+        const float inner = ImGui::GetContentRegionAvail().x;
+        CardHeader("Application en cours",
+                   "Chaque ligne correspond a une operation reellement effectuee.");
+
+        // La progression n'est pas connue d'avance : le nombre d'etapes depend
+        // de ce que le moteur decide d'appliquer. Tant que le lot tourne, la
+        // barre defile plutot que d'afficher un pourcentage invente.
+        ProgressTrack("##runbar", apply_running_ ? -1.0f : 1.0f, inner,
+                      failed ? Status::Danger : (apply_running_ ? Status::Accent : Status::Ok));
+
+        VSpace(M().sp_lg);
+
+        if (steps.empty()) {
+            Skeleton("##sk1", ImVec2(inner * 0.55f, M().row_h * 0.5f));
+            VSpace(M().sp_sm);
+            Skeleton("##sk2", ImVec2(inner * 0.38f, M().row_h * 0.5f));
+        } else {
+            StepList("##steps", steps.data(), static_cast<int>(steps.size()), inner);
+        }
+
+        VSpace(M().sp_md);
+        char line[96];
+        std::snprintf(line, sizeof(line), "%zu operation(s) terminee(s)", done);
+        Small(line, P().text_muted);
+    }
+    EndCard();
+
+    // Le bouton n'apparait qu'une fois le fil rejoint : proposer de continuer
+    // pendant que le moteur ecrit encore serait une invitation a la course.
+    if (!apply_running_ && apply_collected_) {
+        VSpace(M().sp_lg);
+        if (PrimaryButton("Voir le compte rendu")) flow_ = TweakFlow::Done;
+    }
 }
 
 // ===========================================================================

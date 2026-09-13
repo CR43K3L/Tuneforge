@@ -264,6 +264,25 @@ Engine::Outcome Engine::apply_ids(const std::vector<std::string>& ids, const Opt
     Outcome out;
     const hw::Profile& p = hardware();
 
+    // Chaque appel correspond a une operation qui a lieu, au moment ou elle a
+    // lieu. Rien n'est signale « en avance » pour faire joli.
+    auto report = [&](Progress::Phase ph, const std::string& id = {},
+                      const std::string& title = {}, size_t index = 0, size_t total = 0,
+                      bool failed = false, const std::string& message = {}) {
+        if (!opt.on_progress) return;
+        Progress g;
+        g.phase = ph;
+        g.id = id;
+        g.title = title;
+        g.index = index;
+        g.total = total;
+        g.failed = failed;
+        g.message = message;
+        opt.on_progress(g);
+    };
+
+    report(Progress::Phase::Selecting);
+
     // --- Phase 1 : selection, sans rien ecrire -----------------------------
     std::vector<ITweak*> todo;
     for (const auto& id : ids) {
@@ -304,20 +323,27 @@ Engine::Outcome Engine::apply_ids(const std::vector<std::string>& ids, const Opt
     std::vector<std::string> todo_ids;
     todo_ids.reserve(todo.size());
     for (ITweak* t : todo) todo_ids.push_back(t->meta().id);
+    report(Progress::Phase::Marking, {}, {}, 0, todo.size());
     DirtyFlag::begin(todo_ids);
 
+    size_t rank = 0;
     for (ITweak* t : todo) {
         const std::string& id = t->meta().id;
+        const std::string& title = t->meta().title;
+        ++rank;
 
         // L'instantane d'origine ne doit jamais etre ecrase : s'il existe deja,
         // c'est celui d'avant notre premiere modification.
         if (!state_.has_snapshot(id)) {
+            report(Progress::Phase::Snapshot, id, title, rank, todo.size());
             state_.put_snapshot(id, t->capture());
             state_.save();  // persiste AVANT d'ecrire quoi que ce soit
         }
 
+        report(Progress::Phase::Applying, id, title, rank, todo.size());
         Result r = t->apply();
         if (!r) {
+            report(Progress::Phase::Applying, id, title, rank, todo.size(), true, r.message);
             log_error("{} : application echouee — {}", id, r.message);
             out.failed.push_back(id + " : " + r.message);
             // Retour immediat a l'etat capture pour ce reglage.
@@ -333,8 +359,11 @@ Engine::Outcome Engine::apply_ids(const std::vector<std::string>& ids, const Opt
         out.needs_reboot |= t->meta().needs_reboot;
     }
 
+    report(Progress::Phase::Saving, {}, {}, 0, todo.size());
     state_.save();
+    report(Progress::Phase::Clearing, {}, {}, 0, todo.size());
     DirtyFlag::clear();
+    report(Progress::Phase::Finished, {}, {}, 0, todo.size());
     return out;
 }
 
