@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 
 #include "imgui_internal.h"
 
@@ -413,9 +414,15 @@ bool StyledButton(const char* label, const ImVec2& size, bool enabled, const ImV
     const bool busy = state != BtnState::Idle;
     const bool live = enabled && !busy;
 
-    // L'etat decide du texte et de la couleur, pas l'appelant : deux boutons
-    // en cours d'application se ressemblent forcement.
+    // « ## » separe le texte visible de ce qui ne sert qu'a distinguer deux
+    // boutons portant le meme intitule. ImGui::Button coupe la : un bouton
+    // dessine a la main doit le faire aussi, sinon « Appliquer##pl » s'affiche
+    // tel quel.
     const char* shown = label;
+    const char* shown_end = std::strstr(label, "##");
+
+    // L'etat decide de la couleur, pas l'appelant : deux boutons en cours
+    // d'application se ressemblent forcement.
     ImVec4      tint_fg = fg, tint_bg = bg, tint_border = border;
     switch (state) {
         case BtnState::Loading:
@@ -447,7 +454,7 @@ bool StyledButton(const char* label, const ImVec2& size, bool enabled, const ImV
     const float gap = busy ? M().sp_sm : 0.0f;
 
     ImGui::PushFont(F().semibold, M().font_body);
-    const ImVec2 ts = ImGui::CalcTextSize(shown);
+    const ImVec2 ts = ImGui::CalcTextSize(shown, shown_end);
     ImGui::PopFont();
 
     const ImVec2 pad(M().sp_lg, M().sp_sm + 1.0f * M().scale);
@@ -513,7 +520,7 @@ bool StyledButton(const char* label, const ImVec2& size, bool enabled, const ImV
     }
 
     dl->AddText(F().semibold, M().font_body, ImVec2(tc.x + glyph + gap, tc.y), U32(tint_fg),
-                shown);
+                shown, shown_end);
     return pressed;
 }
 
@@ -1318,6 +1325,166 @@ void Skeleton(const char* id, const ImVec2& size) {
                                 U32(WithAlpha(P().text, 0.05f)),
                                 U32(WithAlpha(P().text, 0.0f)));
     dl->PopClipRect();
+}
+
+// ===========================================================================
+// Curseur
+// ===========================================================================
+//
+// Dessine a la main plutot que ImGui::SliderInt : il fallait une piste creuse,
+// une portion parcourue eclairee et une poignee qui reagisse au survol. La
+// valeur reste en monospace — c'est une mesure, elle doit s'aligner d'une
+// image a l'autre au lieu de danser.
+bool Slider(const char* id, const char* label, int* value, int vmin, int vmax,
+            const char* fmt, float width) {
+    ImGuiWindow*  win = ImGui::GetCurrentWindow();
+    const ImGuiID gid = win->GetID(id);
+    const bool    has_label = label && *label;
+
+    ImGui::BeginGroup();
+    if (has_label) {
+        Small(label, P().text_muted);
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + M().sp_xs * 0.5f);
+    }
+
+    // Une ligne reservee a la valeur, au-dessus de la piste : sans elle le
+    // chiffre chevauche le libelle du curseur.
+    const float  text_h = M().font_small * 1.35f;
+    const float  h = text_h + M().row_h * 0.72f;
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const ImVec2 size(width > 0.0f ? width : ImGui::GetContentRegionAvail().x, h);
+
+    ImGui::ItemSize(size);
+    if (!ImGui::ItemAdd(ImRect(p, p + size), gid)) {
+        ImGui::EndGroup();
+        return false;
+    }
+
+    bool hovered = false, held = false;
+    ImGui::ButtonBehavior(ImRect(p, p + size), gid, &hovered, &held);
+    if (hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+
+    const float knob_r = (h - text_h) * 0.42f;
+    const float x0 = p.x + knob_r;
+    const float x1 = p.x + size.x - knob_r;
+    const float span = (std::max)(1.0f, x1 - x0);
+
+    bool changed = false;
+    if (held && vmax > vmin) {
+        const float u = std::clamp((ImGui::GetIO().MousePos.x - x0) / span, 0.0f, 1.0f);
+        const int   nv = vmin + static_cast<int>(std::lround(u * (vmax - vmin)));
+        if (nv != *value) { *value = nv; changed = true; }
+    }
+
+    const float frac = (vmax > vmin)
+                           ? std::clamp(static_cast<float>(*value - vmin) /
+                                            static_cast<float>(vmax - vmin), 0.0f, 1.0f)
+                           : 0.0f;
+    // La poignee suit la valeur en glissant : pendant un glissement la valeur
+    // change par pas entiers, et sans lissage la poignee sauterait de cran en
+    // cran au lieu de suivre le pointeur.
+    const float shown = SmoothValue(gid, frac, 30.0f);
+    const float kx = x0 + span * shown;
+    const float cy = p.y + text_h + (h - text_h) * 0.5f;
+
+    const float hov = Animate(ImHashStr("##h", 0, gid), (hovered || held) ? 1.0f : 0.0f, 18.0f);
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float track = 6.0f * M().scale;
+
+    dl->AddRectFilled(ImVec2(p.x, cy - track * 0.5f), ImVec2(p.x + size.x, cy + track * 0.5f),
+                      U32(P().sunken), track * 0.5f);
+    if (shown > 0.001f) {
+        dl->AddRectFilled(ImVec2(p.x, cy - track * 0.5f), ImVec2(kx, cy + track * 0.5f),
+                          U32(WithAlpha(P().accent, 0.30f + 0.25f * hov)), track * 0.5f);
+        dl->AddRectFilled(ImVec2(p.x, cy - track * 0.5f + 1.0f),
+                          ImVec2(kx, cy + track * 0.5f - 1.0f), U32(P().accent),
+                          track * 0.5f);
+    }
+
+    const float kr = knob_r * (1.0f + 0.12f * hov);
+    if (hov > 0.01f) {
+        dl->AddCircleFilled(ImVec2(kx, cy), kr + 5.0f * M().scale * hov,
+                            U32(WithAlpha(P().accent, 0.16f * hov)), 24);
+    }
+    dl->AddCircleFilled(ImVec2(kx, cy), kr, U32(P().text), 24);
+    dl->AddCircleFilled(ImVec2(kx, cy), kr * 0.45f, U32(P().accent), 16);
+
+    // Valeur, a droite de la piste quand la place le permet, sinon au-dessus
+    // de la poignee.
+    char text[48];
+    std::snprintf(text, sizeof(text), fmt ? fmt : "%d", *value);
+    ImGui::PushFont(F().mono, M().font_small);
+    const ImVec2 ts = ImGui::CalcTextSize(text);
+    ImGui::PopFont();
+    const float tx = std::clamp(kx - ts.x * 0.5f, p.x, p.x + size.x - ts.x);
+    dl->AddText(F().mono, M().font_small, ImVec2(tx, p.y),
+                U32(hov > 0.4f ? P().text : P().text_secondary), text);
+
+    ImGui::EndGroup();
+    return changed;
+}
+
+
+// ===========================================================================
+// Etat vide
+// ===========================================================================
+//
+// Une page sans contenu doit expliquer POURQUOI elle est vide. Un espace
+// blanc laisse croire a un chargement qui n'arrive jamais, ou pire, a une
+// panne. Le cercle dessine n'est pas une decoration : il occupe le centre
+// optique de la zone, ce qui evite au regard de chercher.
+void EmptyState(const char* id, const char* title, const char* explanation, float width,
+                Status tone) {
+    ImGuiWindow*  win = ImGui::GetCurrentWindow();
+    const ImGuiID gid = win->GetID(id);
+    const float   r = 20.0f * M().scale;
+
+    ImGui::PushFont(F().semibold, M().font_title);
+    const ImVec2 ts = ImGui::CalcTextSize(title);
+    ImGui::PopFont();
+    ImGui::PushFont(F().regular, M().font_small);
+    const ImVec2 es = ImGui::CalcTextSize(explanation, nullptr, false, width * 0.72f);
+    ImGui::PopFont();
+
+    const float h = r * 2.0f + M().sp_lg + ts.y + M().sp_sm + es.y + M().sp_xl;
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::ItemSize(ImVec2(width, h));
+    if (!ImGui::ItemAdd(ImRect(p, p + ImVec2(width, h)), gid)) return;
+
+    const float t = EaseOutCubic(Timeline(gid, MO().slow));
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    const ImVec4 col = StatusColor(tone);
+    const float  cx = p.x + width * 0.5f;
+    float        y = p.y + M().sp_lg + r;
+
+    // Le cercle se trace au lieu d'apparaitre : le mouvement dit que la page
+    // a bien fini de se construire.
+    dl->AddCircleFilled(ImVec2(cx, y), r * t, U32(WithAlpha(col, 0.08f)), 32);
+    dl->PathArcTo(ImVec2(cx, y), r, -IM_PI * 0.5f, -IM_PI * 0.5f + IM_PI * 2.0f * t, 48);
+    dl->PathStroke(U32(WithAlpha(col, 0.55f)), 0, 1.6f * M().scale);
+    // Coche centrale, tracee apres le cercle.
+    const float k = std::clamp(t * 1.6f - 0.6f, 0.0f, 1.0f);
+    if (k > 0.0f) {
+        const ImVec2 a(cx - r * 0.34f, y + r * 0.02f);
+        const ImVec2 b(cx - r * 0.08f, y + r * 0.28f);
+        const ImVec2 c(cx + r * 0.36f, y - r * 0.28f);
+        dl->PathLineTo(a);
+        dl->PathLineTo(ImVec2(a.x + (b.x - a.x) * (std::min)(k * 2.0f, 1.0f),
+                              a.y + (b.y - a.y) * (std::min)(k * 2.0f, 1.0f)));
+        if (k > 0.5f) {
+            const float k2 = (k - 0.5f) * 2.0f;
+            dl->PathLineTo(ImVec2(b.x + (c.x - b.x) * k2, b.y + (c.y - b.y) * k2));
+        }
+        dl->PathStroke(U32(col), 0, 2.0f * M().scale);
+    }
+
+    y += r + M().sp_lg;
+    dl->AddText(F().semibold, M().font_title, ImVec2(cx - ts.x * 0.5f, y),
+                U32(WithAlpha(P().text, t)), title);
+    y += ts.y + M().sp_sm;
+    dl->AddText(F().regular, M().font_small, ImVec2(cx - es.x * 0.5f, y),
+                U32(WithAlpha(P().text_muted, t)), explanation, nullptr, width * 0.72f);
 }
 
 } // namespace tf::ui

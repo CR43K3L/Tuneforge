@@ -270,10 +270,14 @@ bool App::ConsumeStyleReload() {
     return v;
 }
 
+// Duree d'affichage d'un toast. Nommee parce que l'animation de sortie a
+// besoin de savoir quand l'entree a commence.
+constexpr double kNoticeSeconds = 6.0;
+
 void App::Notify(const std::string& text, Status s) {
     notice_ = text;
     notice_status_ = s;
-    notice_until_ = ImGui::GetTime() + 6.0;
+    notice_until_ = ImGui::GetTime() + kNoticeSeconds;
 }
 
 // ===========================================================================
@@ -486,30 +490,62 @@ void App::DrawContent() {
     ImGui::EndChild();
 }
 
+// Notification flottante.
+//
+// L'ancien bandeau s'inserait dans le flux et poussait toute la page vers le
+// bas a chaque message, puis la faisait remonter d'un coup en disparaissant.
+// Un retour d'information ne doit pas deplacer ce que l'utilisateur est en
+// train de lire : le toast est donc dessine par-dessus, en bas a droite, et
+// ne prend aucune place dans la mise en page.
 void App::DrawNotice() {
-    if (notice_.empty() || ImGui::GetTime() > notice_until_) return;
+    if (notice_.empty()) return;
 
-    ImGui::SetCursorPosX(M().sp_2xl);
-    const float w = ImGui::GetContentRegionAvail().x - M().sp_2xl;
-    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const double now = ImGui::GetTime();
+    const double left = notice_until_ - now;
+    if (left < -0.4) { notice_.clear(); return; }
+
+    // Entree franche, sortie plus lente : on remarque l'arrivee, on ne subit
+    // pas le depart.
+    constexpr float kIn = 0.22f, kOut = 0.35f;
+    const float in = EaseOutCubic(std::clamp(
+        static_cast<float>(now - (notice_until_ - kNoticeSeconds)) / kIn, 0.0f, 1.0f));
+    const float out = left > 0.0 ? 1.0f
+                                 : 1.0f - EaseOutCubic(std::clamp(
+                                              static_cast<float>(-left) / kOut, 0.0f, 1.0f));
+    const float a = in * out;
+    if (a <= 0.01f) return;
+
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImDrawList*          dl = ImGui::GetForegroundDrawList();
+    const ImVec4         col = StatusColor(notice_status_);
+
+    const float pad = M().sp_md;
+    const float maxw = (std::min)(420.0f * M().scale, vp->Size.x * 0.5f);
 
     ImGui::PushFont(F().regular, M().font_small);
-    const float pad = M().sp_md;
-    const ImVec2 ts = ImGui::CalcTextSize(notice_.c_str(), nullptr, false, w - pad * 2 - 4);
-    const ImVec2 size(w, ts.y + pad * 2);
-
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(p, p + size, U32(StatusSubtle(notice_status_)), M().r_md);
-    dl->AddLine(ImVec2(p.x, p.y), ImVec2(p.x, p.y + size.y), U32(StatusColor(notice_status_)),
-                2.5f * M().scale);
+    const ImVec2 ts = ImGui::CalcTextSize(notice_.c_str(), nullptr, false, maxw);
     ImGui::PopFont();
 
-    ImGui::SetCursorScreenPos(ImVec2(p.x + pad, p.y + pad));
-    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + w - pad * 2);
-    TextAt(F().regular, M().font_small, StatusColor(notice_status_), notice_.c_str());
-    ImGui::PopTextWrapPos();
+    const float dot = 4.0f * M().scale;
+    const ImVec2 size(ts.x + pad * 2.0f + dot * 2.0f + M().sp_sm, ts.y + pad * 1.6f);
 
-    ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + size.y + M().sp_md));
+    // Glisse depuis le bas. Douze pixels : assez pour que le mouvement se
+    // lise, trop peu pour attirer l'oeil plus que le texte lui-meme.
+    const float rise = (1.0f - in) * 12.0f * M().scale;
+    const ImVec2 p(vp->Pos.x + vp->Size.x - size.x - M().sp_xl,
+                   vp->Pos.y + vp->Size.y - size.y - M().sp_xl + rise);
+    const ImVec2 q(p.x + size.x, p.y + size.y);
+
+    SoftShadow(dl, p, q, M().r_md, 10.0f * M().scale, WithAlpha(P().shadow, 0.55f * a));
+    dl->AddRectFilled(p, q, U32(WithAlpha(P().surface_raised, a)), M().r_md);
+    dl->AddRect(p, q, U32(WithAlpha(col, 0.45f * a)), M().r_md, 0, M().border);
+    TopHairline(dl, p, q, M().r_md, WithAlpha(P().hairline_top, P().hairline_top.w * a));
+
+    dl->AddCircleFilled(ImVec2(p.x + pad + dot, p.y + size.y * 0.5f), dot,
+                        U32(WithAlpha(col, a)), 12);
+    dl->AddText(F().regular, M().font_small,
+                ImVec2(p.x + pad + dot * 2.0f + M().sp_sm, p.y + pad * 0.8f),
+                U32(WithAlpha(P().text, a)), notice_.c_str(), nullptr, maxw);
 }
 
 // ===========================================================================
@@ -1280,24 +1316,10 @@ void App::PageTweaksDone() {
 namespace {
 
 // Curseur aux couleurs du theme, avec son intitule au-dessus.
+// Un seul curseur dans toute l'application : celui du systeme de design.
 bool ThemedSlider(const char* id, const char* label, int* value, int vmin, int vmax,
                   const char* fmt, float width) {
-    ImGui::BeginGroup();
-    Small(label, P().text_muted);
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, P().sunken);
-    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, P().surface2);
-    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, P().surface3);
-    ImGui::PushStyleColor(ImGuiCol_SliderGrab, P().accent);
-    ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, P().accent_hover);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(M().sp_md, M().sp_sm));
-    ImGui::PushFont(F().mono, M().font_body);
-    ImGui::SetNextItemWidth(width);
-    const bool changed = ImGui::SliderInt(id, value, vmin, vmax, fmt);
-    ImGui::PopFont();
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor(5);
-    ImGui::EndGroup();
-    return changed;
+    return Slider(id, label, value, vmin, vmax, fmt, width);
 }
 
 }  // namespace
@@ -1752,11 +1774,12 @@ void App::PageRestore() {
         CardHeader(line, "Chacun peut etre remis dans son etat d'origine.");
 
         if (ids.empty()) {
-            WrappedMuted("Tuneforge n'a rien modifie sur cette machine. Les reglages deja "
-                         "actifs le sont du fait de votre configuration Windows, pas de cet "
-                         "outil : il ne les revendique pas et ne propose donc pas de les "
-                         "annuler.",
-                         inner);
+            EmptyState("##norestore", "Rien a restaurer",
+                       "Tuneforge n'a rien modifie sur cette machine. Les reglages deja "
+                       "actifs le sont du fait de votre configuration Windows, pas de cet "
+                       "outil : il ne les revendique pas, et ne propose donc pas de les "
+                       "annuler.",
+                       inner);
         } else {
             if (DangerButton("Tout restaurer", ImVec2(0, 0), elevated_)) {
                 Engine::Outcome o = engine_->revert_all();
@@ -2040,18 +2063,22 @@ void App::PageTweaksRunning() {
 // ===========================================================================
 namespace {
 
-// Ligne de fiche technique : intitule a gauche sur une largeur fixe, valeur a
-// droite. La valeur est en monospace parce que c'est une donnee relevee sur la
-// machine, pas une phrase.
+// Ligne de fiche technique. L'intitule est en micro-capitales et la valeur en
+// monospace : ce sont deux natures differentes — une etiquette et une donnee
+// relevee — et les distinguer typographiquement evite d'avoir a les separer
+// par un trait plein.
+//
+// Un filet tres pale ferme chaque ligne. Sans lui, une colonne de dix valeurs
+// devient un bloc de texte ou l'oeil perd l'appariement intitule/valeur.
 void SpecRow(const char* label, const std::string& value, float label_w) {
     if (value.empty()) return;
     ImDrawList*  dl = ImGui::GetWindowDrawList();
     const ImVec2 pos = ImGui::GetCursorScreenPos();
     const float  avail = ImGui::GetContentRegionAvail().x;
 
-    ImGui::PushFont(F().regular, M().font_small);
-    const float line = ImGui::GetFontSize();
-    dl->AddText(ImVec2(pos.x, pos.y), U32(P().text_muted), label);
+    ImGui::PushFont(F().semibold, M().font_micro);
+    const float lh = ImGui::GetFontSize();
+    dl->AddText(ImVec2(pos.x, pos.y + 2.0f * M().scale), U32(P().text_muted), label);
     ImGui::PopFont();
 
     ImGui::PushFont(F().mono, M().font_small);
@@ -2061,7 +2088,13 @@ void SpecRow(const char* label, const std::string& value, float label_w) {
                 value.c_str(), nullptr, wrap);
     ImGui::PopFont();
 
-    ImGui::Dummy(ImVec2(avail, (std::max)(line, h) + M().sp_xs));
+    const float row_h = (std::max)(lh, h) + M().sp_sm;
+    dl->AddLine(ImVec2(pos.x, pos.y + row_h - M().sp_xs * 0.5f),
+                ImVec2(pos.x + avail, pos.y + row_h - M().sp_xs * 0.5f),
+                U32(WithAlpha(P().border_subtle, 0.55f * ImGui::GetStyle().Alpha)),
+                M().border);
+
+    ImGui::Dummy(ImVec2(avail, row_h));
 }
 
 }  // namespace

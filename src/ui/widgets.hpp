@@ -216,4 +216,15 @@ void Skeleton(const char* id, const ImVec2& size);
 // Assombrit toute la fenetre. `t` est la progression d'ouverture [0,1].
 void Scrim(float t);
 
+// --- Etat vide -----------------------------------------------------------------
+// Une page sans contenu doit dire pourquoi elle est vide : un espace blanc
+// laisse croire a un chargement qui n'arrive pas.
+void EmptyState(const char* id, const char* title, const char* explanation, float width,
+                Status tone = Status::Ok);
+
+// --- Curseur ------------------------------------------------------------------
+// Renvoie true a chaque changement de valeur. `label` peut etre vide.
+bool Slider(const char* id, const char* label, int* value, int vmin, int vmax,
+            const char* fmt, float width);
+
 } // namespace tf::ui
