@@ -1,0 +1,39 @@
+// Modele de ressources Windows. CMake en produit une copie par executable
+// (voir tf_add_resources dans CMakeLists.txt) : ne pas modifier les .rc
+// generes dans le dossier de compilation.
+//
+// Le numero de version vient de project() : l'installateur, la carte
+// « A propos » et les proprietes du fichier affichent donc forcement le meme.
+#include <winver.h>
+
+// Identifiant 1 : l'explorateur retient la premiere icone d'un executable.
+1 ICON "@TF_ICON@"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+PRODUCTVERSION  @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+FILEFLAGS       0
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040C04B0"
+        BEGIN
+            VALUE "CompanyName",      "Tuneforge"
+            VALUE "FileDescription",  "@TF_DESCRIPTION@"
+            VALUE "FileVersion",      "@PROJECT_VERSION@"
+            VALUE "InternalName",     "@TF_NAME@"
+            VALUE "LegalCopyright",   "GNU GPL v3.0"
+            VALUE "OriginalFilename", "@TF_NAME@.exe"
+            VALUE "ProductName",      "Tuneforge"
+            VALUE "ProductVersion",   "@PROJECT_VERSION@"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x040C, 1200
+    END
+END

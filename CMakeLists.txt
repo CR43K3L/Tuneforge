@@ -67,14 +67,32 @@ target_link_libraries(tfcore PUBLIC
 # ---------------------------------------------------------------------------
 # CLI principal
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Ressources Windows : icone et informations de version
+# ---------------------------------------------------------------------------
+# Sans elles, les trois executables s'affichent comme des programmes
+# generiques dans l'explorateur, la barre des taches et le gestionnaire de
+# taches — et un outil sans nom ni editeur qui demande les droits
+# administrateur inspire la mefiance, a juste titre.
+function(tf_add_resources target description)
+    set(TF_ICON "${CMAKE_CURRENT_SOURCE_DIR}/resources/tuneforge.ico")
+    set(TF_NAME "${target}")
+    set(TF_DESCRIPTION "${description}")
+    set(rc "${CMAKE_CURRENT_BINARY_DIR}/resources/${target}.rc")
+    configure_file("${CMAKE_CURRENT_SOURCE_DIR}/resources/tuneforge.rc.in" "${rc}" @ONLY)
+    target_sources(${target} PRIVATE "${rc}")
+endfunction()
+
 add_executable(tuneforge src/cli/main.cpp)
 target_link_libraries(tuneforge PRIVATE tfcore)
+tf_add_resources(tuneforge "Tuneforge - ligne de commande")
 
 # ---------------------------------------------------------------------------
 # Outil de secours autonome : restaure tout sans dependre de l'app principale.
 # ---------------------------------------------------------------------------
 add_executable(tuneforge-reset src/reset/main.cpp)
 target_link_libraries(tuneforge-reset PRIVATE tfcore)
+tf_add_resources(tuneforge-reset "Tuneforge - restauration d'urgence")
 
 # ---------------------------------------------------------------------------
 # Dear ImGui — rendu Direct3D 11
@@ -108,6 +126,7 @@ if(EXISTS ${IMGUI_DIR}/imgui.cpp)
         src/ui/window.cpp
     )
     target_link_libraries(tuneforge-gui PRIVATE tfcore imgui)
+    tf_add_resources(tuneforge-gui "Tuneforge")
 
     # L interface demande l elevation des son lancement. Elle ne sert a rien
     # sans : chaque ecriture GPU comme chaque reglage Windows la reclame, et

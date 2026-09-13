@@ -158,7 +158,16 @@ bool Window::Create(const wchar_t* title, int width, int height) {
     wc.hCursor       = ::LoadCursorW(nullptr, IDC_ARROW);
     wc.hbrBackground = nullptr;
     wc.lpszClassName = kClassName;
-    wc.hIcon         = ::LoadIconW(nullptr, IDI_APPLICATION);
+    // Icone embarquee par tuneforge.rc, identifiant 1. Les deux tailles sont
+    // chargees explicitement : laisser Windows reduire la grande donne un
+    // losange flou a 16 px dans la barre de titre du selecteur de fenetres.
+    wc.hIcon   = static_cast<HICON>(::LoadImageW(wc.hInstance, MAKEINTRESOURCEW(1), IMAGE_ICON,
+                                                 ::GetSystemMetrics(SM_CXICON),
+                                                 ::GetSystemMetrics(SM_CYICON), LR_DEFAULTCOLOR));
+    wc.hIconSm = static_cast<HICON>(::LoadImageW(wc.hInstance, MAKEINTRESOURCEW(1), IMAGE_ICON,
+                                                 ::GetSystemMetrics(SM_CXSMICON),
+                                                 ::GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
+    if (!wc.hIcon) wc.hIcon = ::LoadIconW(nullptr, IDI_APPLICATION);
     if (!::RegisterClassExW(&wc)) {
         log_error("RegisterClassEx a echoue : {}", last_error());
         return false;

@@ -1,0 +1,35 @@
+﻿TUNEFORGE — À LIRE AVANT D'INSTALLER
+
+Tuneforge optimise Windows et règle les cartes graphiques NVIDIA. Tout ce qu'il modifie est capturé avant la modification et peut être remis dans l'état d'origine à tout moment.
+
+
+WINDOWS VA VOUS AVERTIR — C'EST ATTENDU
+
+Tuneforge n'est pas encore signé numériquement : la signature est payante et prévue pour la version 1.0. Windows affichera donc :
+
+  • « Windows a protégé votre ordinateur » au lancement de l'installateur :
+    cliquez sur « Informations complémentaires », puis « Exécuter quand même ».
+
+  • « Éditeur inconnu » à chaque ouverture de Tuneforge :
+    il demande les droits administrateur, parce que chaque réglage en a besoin.
+
+Certains antivirus peuvent aussi le signaler par excès de prudence : un outil qui modifie le registre et pilote une carte graphique ressemble, vu de loin, à ce qu'ils surveillent.
+
+
+CE QUE TUNEFORGE NE FAIT PAS
+
+  • Il n'installe aucun pilote noyau — c'est ce que les anti-triche (Vanguard, Easy Anti-Cheat, BattlEye) surveillent en priorité.
+  • Il ne touche ni à la tension ni à la fréquence du processeur.
+  • Il n'applique rien sans votre validation, réglage par réglage.
+  • Les réglages de la carte graphique sont perdus au redémarrage : un mauvais réglage se corrige en redémarrant.
+
+
+SI QUELQUE CHOSE SE PASSE MAL
+
+Menu Démarrer → « Tuneforge - restauration d'urgence ». Il remet tout dans l'état d'origine et ne vous demande qu'une confirmation.
+
+La désinstallation propose elle aussi de tout restaurer avant de supprimer le programme.
+
+
+Code source, questions et signalement de problèmes :
+https://github.com/CR43K3L/Tuneforge

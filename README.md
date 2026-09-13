@@ -71,6 +71,30 @@ Les binaires sortent dans `build\bin\` :
 
 Le runtime C++ est lié statiquement : aucun VC++ Redistributable n'est requis chez l'utilisateur.
 
+### Installateur
+
+```powershell
+winget install JRSoftware.InnoSetup
+.\package.ps1
+```
+
+Produit `dist\Tuneforge-<version>-setup.exe` et affiche son empreinte SHA-256. La version est
+lue dans `CMakeLists.txt` : l'installateur, la carte « À propos » et les propriétés des
+exécutables ne peuvent pas diverger.
+
+L'installateur pose les trois exécutables dans Program Files, ajoute un raccourci
+« Tuneforge - restauration d'urgence » au menu Démarrer, et affiche avant l'installation une
+page qui prévient des avertissements de Windows.
+
+**La désinstallation propose de tout restaurer** avant de supprimer les fichiers. Sans cette
+étape, désinstaller laisserait en place des réglages dont l'outil capable de les annuler vient
+d'être supprimé. En désinstallation silencieuse la réponse par défaut est non : une opération
+lancée sans écran ne modifie rien au-delà du retrait de ses propres fichiers.
+
+**L'installateur n'est pas signé.** SmartScreen affiche « Windows a protégé votre
+ordinateur » au premier lancement, et l'invite d'élévation indique « Éditeur inconnu ». La
+signature de code est prévue pour la v1.0.
+
 ---
 
 ## Interface graphique
